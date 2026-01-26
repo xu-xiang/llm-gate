@@ -1,0 +1,10 @@
+# 示例配置文件 (仅供技术研究参考)
+port: 3000
+api_key: "test_key_for_research"
+model_mappings:
+  "research-model-v1": "coder-model"
+providers:
+  qwen:
+    enabled: true
+    auth_files:
+      - ./examples/oauth_creds.json.example

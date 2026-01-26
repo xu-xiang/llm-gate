@@ -1,0 +1,8 @@
+{
+  "access_token": "your_access_token_here",
+  "refresh_token": "your_refresh_token_here",
+  "token_type": "Bearer",
+  "resource_url": "portal.qwen.ai",
+  "expiry_date": 1737895000000,
+  "scope": "qwen-code"
+}

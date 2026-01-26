@@ -1,0 +1,26 @@
+# LLM Protocol Bridge 配置文件
+# 本项目仅用于技术探讨、接口协议兼容性验证及可观测性研究。
+# 使用前请确保您的行为符合相关服务商的开发者规范及法律法规。
+
+# 服务监听端口
+port: 3000
+
+# 安全验证令牌 (用于验证本地接口调用权限)
+api_key: your-secret-token
+
+# 接口标识映射 (用于验证不同语义名称的路由兼容性)
+model_mappings:
+  "research-model-v1": "coder-model"
+
+# 日志详细程度
+log_level: INFO
+
+# 服务提供者配置
+providers:
+  qwen:
+    enabled: true
+    # 凭证路径列表
+    # 用于研究多端点环境下的负载分发与稳定性策略
+    auth_files:
+      - ./oauth_creds_1.json
+      - ./oauth_creds_2.json
