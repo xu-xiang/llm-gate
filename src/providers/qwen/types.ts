@@ -9,6 +9,16 @@ export interface QwenCredentials {
     expiry_date?: number; // Optional: Some clients use this instead of created_at + expires_in
 }
 
+export interface SearchResult {
+    title: string;
+    url: string;
+    snippet: string;
+}
+
+export interface WebSearchResponse {
+    results: SearchResult[];
+}
+
 export interface DeviceAuthorizationResponse {
     device_code: string;
     user_code: string;

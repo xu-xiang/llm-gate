@@ -6,6 +6,8 @@ import { logger, LogLevel } from './core/logger';
 import { MultiQwenProvider } from './providers/qwen/multiProvider';
 import { createChatRouter } from './routes/chat';
 import { createDashboardRouter } from './routes/dashboard';
+import { createToolsRouter } from './routes/tools';
+import { quotaManager } from './core/quota';
 
 export async function createApp(config: AppConfig) {
     // Set log level
@@ -27,6 +29,10 @@ export async function createApp(config: AppConfig) {
     app.use(cors());
     app.use(express.json());
 
+    if (config.qwen_oauth_client_id) {
+        process.env.QWEN_OAUTH_CLIENT_ID = config.qwen_oauth_client_id;
+    }
+
     // Initialize Providers
     let qwenProvider: MultiQwenProvider | undefined;
     if (config.providers.qwen?.enabled) {
@@ -34,6 +40,17 @@ export async function createApp(config: AppConfig) {
         qwenProvider = new MultiQwenProvider(config.providers.qwen.auth_files);
         await qwenProvider.initialize();
     }
+
+    quotaManager.setLimits({
+        chat: {
+            daily: config.quota?.chat?.daily,
+            rpm: config.quota?.chat?.rpm
+        },
+        search: {
+            daily: config.quota?.search?.daily,
+            rpm: config.quota?.search?.rpm
+        }
+    });
 
     // Routes - Public
     app.use('/', createDashboardRouter(qwenProvider));
@@ -59,6 +76,7 @@ export async function createApp(config: AppConfig) {
 
     // Routes - Protected
     app.use('/v1/chat', createChatRouter(qwenProvider, config.model_mappings));
+    app.use('/v1/tools', createToolsRouter(qwenProvider));
 
     // Global Error Handler
     app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -68,4 +86,3 @@ export async function createApp(config: AppConfig) {
 
     return app;
 }
-

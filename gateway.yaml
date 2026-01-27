@@ -15,6 +15,19 @@ model_mappings:
 # 日志详细程度
 log_level: INFO
 
+# Qwen OAuth 客户端 ID（默认与 qwen-code 一致）
+# qwen-code 默认值位置：packages/core/src/qwen/qwenOAuth2.ts
+qwen_oauth_client_id: f0304373b74a44d2b584a3fb70ca9e56
+
+# 配额显示（0 表示无限制，仅用于观测，不做强制限流）
+quota:
+  chat:
+    daily: 2000
+    rpm: 60
+  search:
+    daily: 0
+    rpm: 0
+
 # 服务提供者配置
 providers:
   qwen:

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { LLMProvider } from '../base';
 import { QwenAuthManager } from './auth';
-import { DEFAULT_DASHSCOPE_BASE_URL } from './constants';
+import { DEFAULT_DASHSCOPE_BASE_URL, QWEN_SEARCH_PATH } from './constants';
 import { Readable } from 'stream';
 import { logger } from '../../core/logger';
 import { monitor } from '../../core/monitor';
@@ -17,8 +17,14 @@ export interface ProviderStatus {
     lastLatency?: number;
     lastUsed?: Date;
     quota?: {
-        daily: { used: number, limit: number, percent: number };
-        rpm: { used: number, limit: number, percent: number };
+        chat: {
+            daily: { used: number, limit: number, percent: number };
+            rpm: { used: number, limit: number, percent: number };
+        };
+        search: {
+            daily: { used: number, limit: number, percent: number };
+            rpm: { used: number, limit: number, percent: number };
+        };
     };
 }
 
@@ -115,6 +121,7 @@ export class QwenProvider implements LLMProvider {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${creds.access_token}`,
+                        'X-DashScope-AuthType': 'qwen-oauth',
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify(req.body)
@@ -144,24 +151,24 @@ export class QwenProvider implements LLMProvider {
             if (response.status === 429) {
                 this.providerStatus.status = 'error'; // Rate limited is a temporary error
                 this.providerStatus.lastError = 'Rate Limited (429)';
-                monitor.recordRequest('ratelimit');
+                monitor.recordRequest('ratelimit', 'chat');
                 throw new Error('Rate limited');
             } else if (response.status >= 500) {
                 this.providerStatus.status = 'error';
                 this.providerStatus.lastError = `Server Error (${response.status})`;
-                monitor.recordRequest('error');
+                monitor.recordRequest('error', 'chat');
                 this.providerStatus.errorCount++;
                 throw new Error(`Upstream server error: ${response.status}`);
             } else if (response.status === 401) {
                 this.providerStatus.status = 'error';
                 this.providerStatus.lastError = 'Auth Failed (401)';
-                monitor.recordRequest('error');
+                monitor.recordRequest('error', 'chat');
                 this.providerStatus.errorCount++;
                 throw new Error('Authentication failed');
             } else if (!response.ok) {
                 this.providerStatus.status = 'error';
                 this.providerStatus.lastError = `HTTP ${response.status}`;
-                monitor.recordRequest('error');
+                monitor.recordRequest('error', 'chat');
                 this.providerStatus.errorCount++;
                 // Non-retryable maybe? But for now let's throw to allow failover
                 throw new Error(`HTTP Error ${response.status}`);
@@ -169,8 +176,8 @@ export class QwenProvider implements LLMProvider {
 
             // Success
             this.providerStatus.status = 'active';
-            monitor.recordRequest('success');
-            quotaManager.incrementUsage(this.providerStatus.id); // 记录成功请求到持久化计数器
+            monitor.recordRequest('success', 'chat');
+            quotaManager.incrementUsage(this.providerStatus.id, 'chat'); // 记录成功请求到持久化计数器
 
             res.status(response.status);
             const contentType = response.headers.get('content-type');
@@ -197,11 +204,93 @@ export class QwenProvider implements LLMProvider {
             this.providerStatus.lastError = error.message;
             if (!error.message.includes('Rate limited')) {
                 this.providerStatus.errorCount++;
-                monitor.recordRequest('error');
+                monitor.recordRequest('error', 'chat');
             }
 
             // Re-throw so MultiQwenProvider can try next
             throw error;
+        }
+    }
+
+    async handleWebSearch(req: Request, res: Response): Promise<void> {
+        const { query } = req.body;
+        if (!query) {
+            res.status(400).json({ error: 'Missing query parameter' });
+            return;
+        }
+
+        logger.info(`Handling web search for: ${query}`);
+
+        const attemptSearch = async (forceRefresh = false): Promise<any | null> => {
+            let creds = await this.authManager.getValidCredentials();
+            if (forceRefresh) {
+                creds = await this.authManager.refreshToken(creds.refresh_token);
+            }
+
+            const baseUrl = creds.resource_url || 'portal.qwen.ai';
+            let normalizedBase = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
+            if (normalizedBase.endsWith('/')) normalizedBase = normalizedBase.slice(0, -1);
+            
+            const url = `${normalizedBase}${QWEN_SEARCH_PATH}`;
+
+            const requestBody = {
+                uq: query,
+                page: 1,
+                rows: 10
+            };
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${creds.access_token}`,
+                    'X-DashScope-AuthType': 'qwen-oauth',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (response.status === 401 && !forceRefresh) {
+                return null; // Retry
+            }
+
+            return response;
+        };
+
+        try {
+            let response = await attemptSearch(false);
+            if (!response) response = await attemptSearch(true);
+
+            if (!response.ok) {
+                const err = await response.text();
+                throw new Error(`Upstream Search Error: ${response.status} ${err}`);
+            }
+
+            const data = await response.json();
+            if (!data || typeof data.status === 'undefined') {
+                throw new Error('Upstream Search Error: Invalid response format');
+            }
+            if (data.status !== 0) {
+                throw new Error(`Upstream Search Error: ${data.status} ${data.message || 'Unknown error'}`);
+            }
+            const docs = data?.data?.docs || [];
+            const results = docs.map((item: any) => ({
+                title: item.title,
+                url: item.url,
+                content: item.snippet,
+                score: item._score,
+                publishedDate: item.timestamp_format
+            }));
+            monitor.recordRequest('success', 'search');
+            quotaManager.incrementUsage(this.providerStatus.id, 'search');
+            res.json({
+                success: true,
+                query,
+                results
+            });
+        } catch (error: any) {
+            logger.error('WebSearch Failed', error);
+            monitor.recordRequest('error', 'search');
+            res.status(500).json({ error: error.message });
         }
     }
 }

@@ -9,6 +9,17 @@ const ConfigSchema = z.object({
     api_key: z.string().optional(),
     log_level: z.enum(['DEBUG', 'INFO', 'WARN', 'ERROR']).default('INFO'),
     model_mappings: z.record(z.string(), z.string()).default({}),
+    qwen_oauth_client_id: z.string().default('f0304373b74a44d2b584a3fb70ca9e56'),
+    quota: z.object({
+        chat: z.object({
+            daily: z.number().default(2000),
+            rpm: z.number().default(60)
+        }).default({ daily: 2000, rpm: 60 }),
+        search: z.object({
+            daily: z.number().default(0),
+            rpm: z.number().default(0)
+        }).default({ daily: 0, rpm: 0 })
+    }).default({ chat: { daily: 2000, rpm: 60 }, search: { daily: 0, rpm: 0 } }),
     providers: z.object({
         qwen: z.object({
             enabled: z.boolean().default(true),
@@ -24,6 +35,11 @@ export type AppConfig = z.infer<typeof ConfigSchema>;
 
 export const DEFAULT_CONFIG: AppConfig = ConfigSchema.parse({
     port: 3000,
+    qwen_oauth_client_id: 'f0304373b74a44d2b584a3fb70ca9e56',
+    quota: {
+        chat: { daily: 2000, rpm: 60 },
+        search: { daily: 0, rpm: 0 }
+    },
     providers: {
         qwen: {
             enabled: true,

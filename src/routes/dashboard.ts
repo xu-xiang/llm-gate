@@ -10,7 +10,10 @@ export function createDashboardRouter(qwenProvider?: MultiQwenProvider) {
             monitor: monitor.getStats(),
             qwen: qwenProvider ? {
                 currentIndex: qwenProvider.getCurrentIndex(),
-                providers: qwenProvider.getAllProviderStatus()
+                providers: qwenProvider.getAllProviderStatus().map(p => ({
+                    ...p,
+                    path: undefined
+                }))
             } : null
         });
     });
@@ -56,7 +59,7 @@ export function createDashboardRouter(qwenProvider?: MultiQwenProvider) {
 
         .grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 0.75fr 1.25fr;
             gap: 20px;
             flex: 1;
         }
@@ -164,10 +167,13 @@ export function createDashboardRouter(qwenProvider?: MultiQwenProvider) {
 <div class="grid">
     <div class="panel" data-title="SYSTEM STATUS">
         <div class="stat-line"><span class="label">UPTIME:</span><span class="value" id="uptime">0s</span></div>
-        <div class="stat-line"><span class="label">TOTAL REQS:</span><span class="value" id="total-reqs">0</span></div>
-        <div class="stat-line"><span class="label">SUCCESS:</span><span class="value" style="color:var(--text-color)" id="success-reqs">0</span></div>
-        <div class="stat-line"><span class="label">ERRORS:</span><span class="value" style="color:var(--error-color)" id="error-reqs">0</span></div>
-        <div class="stat-line"><span class="label">RATE LIMITS:</span><span class="value" id="ratelimit-reqs">0</span></div>
+        <div class="stat-line"><span class="label">CHAT TOTAL:</span><span class="value" id="chat-total-reqs">0</span></div>
+        <div class="stat-line"><span class="label">CHAT SUCCESS:</span><span class="value" style="color:var(--text-color)" id="chat-success-reqs">0</span></div>
+        <div class="stat-line"><span class="label">CHAT ERRORS:</span><span class="value" style="color:var(--error-color)" id="chat-error-reqs">0</span></div>
+        <div class="stat-line"><span class="label">CHAT RL:</span><span class="value" id="chat-ratelimit-reqs">0</span></div>
+        <div class="stat-line" style="margin-top:8px"><span class="label">SEARCH TOTAL:</span><span class="value" id="search-total-reqs">0</span></div>
+        <div class="stat-line"><span class="label">SEARCH SUCCESS:</span><span class="value" style="color:var(--text-color)" id="search-success-reqs">0</span></div>
+        <div class="stat-line"><span class="label">SEARCH ERRORS:</span><span class="value" style="color:var(--error-color)" id="search-error-reqs">0</span></div>
     </div>
 
     <div class="panel" data-title="PROVIDER POOL (QWEN)">
@@ -216,12 +222,15 @@ export function createDashboardRouter(qwenProvider?: MultiQwenProvider) {
 
             // Update System Stats
             document.getElementById('uptime').textContent = data.monitor.uptime + 's';
-            document.getElementById('total-reqs').textContent = data.monitor.total;
-            document.getElementById('success-reqs').textContent = data.monitor.success;
-            document.getElementById('error-reqs').textContent = data.monitor.error;
-            const rlElement = document.getElementById('ratelimit-reqs');
-            rlElement.textContent = data.monitor.rateLimited;
-            if (data.monitor.rateLimited > 0) rlElement.classList.add('blink-warn');
+            document.getElementById('chat-total-reqs').textContent = data.monitor.chat.total;
+            document.getElementById('chat-success-reqs').textContent = data.monitor.chat.success;
+            document.getElementById('chat-error-reqs').textContent = data.monitor.chat.error;
+            const rlElement = document.getElementById('chat-ratelimit-reqs');
+            rlElement.textContent = data.monitor.chat.rateLimited;
+            if (data.monitor.chat.rateLimited > 0) rlElement.classList.add('blink-warn');
+            document.getElementById('search-total-reqs').textContent = data.monitor.search.total;
+            document.getElementById('search-success-reqs').textContent = data.monitor.search.success;
+            document.getElementById('search-error-reqs').textContent = data.monitor.search.error;
 
             // Update Provider Table
             const tbody = document.getElementById('provider-table');
@@ -234,31 +243,58 @@ export function createDashboardRouter(qwenProvider?: MultiQwenProvider) {
                     const prefix = isCurrent ? '> ' : '';
                     const lastErr = p.lastError ? p.lastError : '-';
                     
-                    const dailyUsed = p.quota ? p.quota.daily.used : 0;
-                    const dailyLimit = p.quota ? p.quota.daily.limit : 2000;
-                    const dailyPercent = p.quota ? p.quota.daily.percent : 0;
+                    const chatDailyUsed = p.quota ? p.quota.chat.daily.used : 0;
+                    const chatDailyLimit = p.quota ? p.quota.chat.daily.limit : 2000;
+                    const chatDailyPercent = p.quota ? p.quota.chat.daily.percent : 0;
                     
-                    const rpmUsed = p.quota ? p.quota.rpm.used : 0;
-                    const rpmLimit = p.quota ? p.quota.rpm.limit : 60;
-                    const rpmPercent = p.quota ? p.quota.rpm.percent : 0;
+                    const chatRpmUsed = p.quota ? p.quota.chat.rpm.used : 0;
+                    const chatRpmLimit = p.quota ? p.quota.chat.rpm.limit : 60;
+                    const chatRpmPercent = p.quota ? p.quota.chat.rpm.percent : 0;
+
+                    const searchDailyUsed = p.quota ? p.quota.search.daily.used : 0;
+                    const searchDailyLimit = p.quota ? p.quota.search.daily.limit : 0;
+                    const searchDailyPercent = p.quota ? p.quota.search.daily.percent : 0;
+                    
+                    const searchRpmUsed = p.quota ? p.quota.search.rpm.used : 0;
+                    const searchRpmLimit = p.quota ? p.quota.search.rpm.limit : 0;
+                    const searchRpmPercent = p.quota ? p.quota.search.rpm.percent : 0;
+
+                    const chatDailyLimitLabel = chatDailyLimit > 0 ? chatDailyLimit : '∞';
+                    const chatRpmLimitLabel = chatRpmLimit > 0 ? chatRpmLimit : '∞';
+                    const searchDailyLimitLabel = searchDailyLimit > 0 ? searchDailyLimit : '∞';
+                    const searchRpmLimitLabel = searchRpmLimit > 0 ? searchRpmLimit : '∞';
                     
                     row.innerHTML = '<td>' + prefix + p.id + '</td>' +
                                   '<td class="' + statusClass + '">' + p.status.toUpperCase() + '</td>' +
                                   '<td>' + p.errorCount + '</td>' +
                                   '<td>' + 
                                     '<div style="margin-bottom:4px">' +
-                                        '<span style="font-size:9px;color:var(--dim-text)">RPM: </span>' +
+                                        '<span style="font-size:9px;color:var(--dim-text)">CHAT RPM: </span>' +
                                         '<div style="width:60px;background:#222;height:6px;display:inline-block;margin-right:5px;border:1px solid #444">' +
-                                            '<div style="width:' + rpmPercent + '%;background:#00ffff;height:100%"></div>' +
+                                            '<div style="width:' + chatRpmPercent + '%;background:#00ffff;height:100%"></div>' +
                                         '</div>' +
-                                        '<span style="font-size:9px">' + rpmUsed + '/' + rpmLimit + '</span>' +
+                                        '<span style="font-size:9px">' + chatRpmUsed + '/' + chatRpmLimitLabel + '</span>' +
                                     '</div>' +
                                     '<div>' +
-                                        '<span style="font-size:9px;color:var(--dim-text)">DAY: </span>' +
+                                        '<span style="font-size:9px;color:var(--dim-text)">CHAT DAY: </span>' +
                                         '<div style="width:60px;background:#222;height:6px;display:inline-block;margin-right:5px;border:1px solid #444">' +
-                                            '<div style="width:' + dailyPercent + '%;background:var(--text-color);height:100%"></div>' +
+                                            '<div style="width:' + chatDailyPercent + '%;background:var(--text-color);height:100%"></div>' +
                                         '</div>' +
-                                        '<span style="font-size:9px">' + dailyUsed + '/' + dailyLimit + '</span>' +
+                                        '<span style="font-size:9px">' + chatDailyUsed + '/' + chatDailyLimitLabel + '</span>' +
+                                    '</div>' +
+                                    '<div style="margin-top:6px">' +
+                                        '<span style="font-size:9px;color:var(--dim-text)">SEARCH RPM: </span>' +
+                                        '<div style="width:60px;background:#222;height:6px;display:inline-block;margin-right:5px;border:1px solid #444">' +
+                                            '<div style="width:' + searchRpmPercent + '%;background:#ffb300;height:100%"></div>' +
+                                        '</div>' +
+                                        '<span style="font-size:9px">' + searchRpmUsed + '/' + searchRpmLimitLabel + '</span>' +
+                                    '</div>' +
+                                    '<div>' +
+                                        '<span style="font-size:9px;color:var(--dim-text)">SEARCH DAY: </span>' +
+                                        '<div style="width:60px;background:#222;height:6px;display:inline-block;margin-right:5px;border:1px solid #444">' +
+                                            '<div style="width:' + searchDailyPercent + '%;background:#ffd54f;height:100%"></div>' +
+                                        '</div>' +
+                                        '<span style="font-size:9px">' + searchDailyUsed + '/' + searchDailyLimitLabel + '</span>' +
                                     '</div>' +
                                   '</td>' +
                                   '<td>' + (p.lastLatency ? p.lastLatency + 'ms' : '-') + '</td>' +

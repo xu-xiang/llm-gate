@@ -90,6 +90,37 @@ export class MultiQwenProvider implements LLMProvider {
             details: lastError?.message 
         });
     }
+
+    async handleWebSearch(req: Request, res: Response): Promise<void> {
+        const availableProviders = this.providers.length;
+        if (availableProviders === 0) {
+            res.status(500).json({ error: 'No Qwen providers configured' });
+            return;
+        }
+
+        let lastError: any = null;
+        for (let attempt = 0; attempt < availableProviders; attempt++) {
+            const providerIndex = (this.currentIndex + attempt) % availableProviders;
+            const provider = this.providers[providerIndex];
+            const status = provider.getStatus();
+
+            if ((status.status === 'error' || status.status === 'initializing') && attempt < availableProviders - 1) {
+                continue;
+            }
+
+            try {
+                if (attempt === 0) {
+                    this.currentIndex = (this.currentIndex + 1) % availableProviders;
+                }
+                return await provider.handleWebSearch(req, res);
+            } catch (err: any) {
+                lastError = err;
+                logger.warn(`Search failed with provider ${status.id}, trying next...`);
+            }
+        }
+
+        res.status(500).json({ error: 'All search providers failed', details: lastError?.message });
+    }
 }
 
 

@@ -3,7 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { logger } from '../../core/logger';
 import {
-    QWEN_OAUTH_CLIENT_ID,
+    getQwenOauthClientId,
     QWEN_OAUTH_DEVICE_CODE_ENDPOINT,
     QWEN_OAUTH_GRANT_TYPE,
     QWEN_OAUTH_SCOPE,
@@ -34,6 +34,10 @@ export class QwenAuthManager {
 
     constructor(credsPath: string) {
         this.credsPath = credsPath;
+    }
+
+    public getCredsPath(): string {
+        return this.credsPath;
     }
 
     private async loadCredentials(): Promise<QwenCredentials | null> {
@@ -86,7 +90,7 @@ export class QwenAuthManager {
     public async startDeviceAuth(codeChallenge: string): Promise<DeviceAuthorizationResponse> {
         try {
             const bodyData = {
-                client_id: QWEN_OAUTH_CLIENT_ID,
+                client_id: getQwenOauthClientId(),
                 scope: QWEN_OAUTH_SCOPE,
                 code_challenge: codeChallenge,
                 code_challenge_method: 'S256',
@@ -123,7 +127,7 @@ export class QwenAuthManager {
                 try {
                     const bodyData = {
                         grant_type: QWEN_OAUTH_GRANT_TYPE,
-                        client_id: QWEN_OAUTH_CLIENT_ID,
+                        client_id: getQwenOauthClientId(),
                         device_code: deviceCode,
                         code_verifier: codeVerifier
                     };
@@ -178,7 +182,7 @@ export class QwenAuthManager {
         try {
             const bodyData = {
                 grant_type: 'refresh_token',
-                client_id: QWEN_OAUTH_CLIENT_ID,
+                client_id: getQwenOauthClientId(),
                 refresh_token: refreshToken
             };
 

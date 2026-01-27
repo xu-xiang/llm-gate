@@ -6,22 +6,36 @@ export interface RequestStats {
     lastRequestTime?: Date;
 }
 
+export interface MonitorStats {
+    chat: RequestStats;
+    search: RequestStats;
+}
+
 class Monitor {
-    private stats: RequestStats = {
-        total: 0,
-        success: 0,
-        error: 0,
-        rateLimited: 0
+    private stats: MonitorStats = {
+        chat: {
+            total: 0,
+            success: 0,
+            error: 0,
+            rateLimited: 0
+        },
+        search: {
+            total: 0,
+            success: 0,
+            error: 0,
+            rateLimited: 0
+        }
     };
 
     private startTime: Date = new Date();
 
-    recordRequest(status: 'success' | 'error' | 'ratelimit') {
-        this.stats.total++;
-        this.stats.lastRequestTime = new Date();
-        if (status === 'success') this.stats.success++;
-        else if (status === 'error') this.stats.error++;
-        else if (status === 'ratelimit') this.stats.rateLimited++;
+    recordRequest(status: 'success' | 'error' | 'ratelimit', kind: 'chat' | 'search' = 'chat') {
+        const target = this.stats[kind];
+        target.total++;
+        target.lastRequestTime = new Date();
+        if (status === 'success') target.success++;
+        else if (status === 'error') target.error++;
+        else if (status === 'ratelimit') target.rateLimited++;
     }
 
     getStats() {
