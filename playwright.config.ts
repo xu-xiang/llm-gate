@@ -8,7 +8,6 @@ export default defineConfig({
   workers: 1, 
   reporter: 'list',
   use: {
-    // 假设用户已经在本地启动了 8787 端口的服务
     baseURL: 'http://localhost:8787',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',

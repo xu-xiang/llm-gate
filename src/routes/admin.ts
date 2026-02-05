@@ -41,7 +41,8 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         .btn-primary { background: var(--primary); color: white; }
         .btn-outline { background: white; color: var(--text); border: 1px solid var(--border); }
         .btn-danger { color: var(--danger); background: #fff1f2; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 100; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; opacity: 0; transition: opacity 0.2s; }
+        .modal.show { opacity: 1; display: flex; }
         .modal-content { background: white; padding: 30px; border-radius: 12px; width: 400px; text-align: center; }
         .code-display { font-family: monospace; font-size: 2rem; background: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0; color: var(--primary); border: 2px dashed #cbd5e1; }
     </style>
@@ -64,32 +65,37 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
 <script>
     const baseUrl = window.location.pathname.replace('/ui', '');
     let pollInterval; let currentAuthId = null;
+    function escapeJS(str) { return str.replace(/'/g, "\\\\'"); }
     async function loadData() {
-        const res = await fetch(baseUrl + '/api/stats');
-        const data = await res.json();
-        const m = data.monitor; const active = data.qwen.providers.filter(p => p.status === 'active').length;
-        document.getElementById('stats-grid').innerHTML = \`
-            <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value">\${Math.floor(m.uptime/3600)}h \${Math.floor(m.uptime%3600/60)}m</div></div>
-            <div class="stat-item"><div class="stat-label">Requests</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
-            <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>\`;
-        document.getElementById('provider-list').innerHTML = data.qwen.providers.map(p => {
-            const daily = p.quota?.chat?.daily || {used:0, limit:2000, percent:0};
-            const rpm = p.quota?.chat?.rpm || {used:0, limit:60, percent:0};
-            const alias = p.alias || 'Unnamed';
-            return \`<tr>
-                <td><div style="font-weight:700" class="alias-text">\${alias} <span onclick="openRename('\${p.id}', '\${alias.replace(/'/g, "\\\\'")}')" style="cursor:pointer;opacity:0.5">✏️</span></div><div style="font-size:10px;color:var(--subtext);font-family:monospace">\${p.id}</div></td>
-                <td><span class="badge badge-\${p.status}">\${p.status}</span></td>
-                <td>\${p.lastLatency ? p.lastLatency+'ms' : '-'}</td>
-                <td><div style="font-size:9px">\${daily.used}/\${daily.limit}</div><div class="progress-bg"><div class="progress-fill" style="width:\${daily.percent}%"></div></div></td>
-                <td><div style="font-size:9px">\${rpm.used}/\${rpm.limit}</div><div class="progress-bg"><div class="progress-fill" style="width:\${rpm.percent}%"></div></div></td>
-                <td><div style="display:flex;gap:4px">
-                    \${p.status==='error'?\`<button class="btn btn-outline btn-sm" onclick="showReAuthModal('\${p.id}', '\${alias.replace(/'/g, "\\\\'")}')">Login</button>\`:''}
-                    <button class="btn btn-danger btn-sm" onclick="deleteProvider('\${p.id}')">Del</button>
-                </div></td>
-            </tr>\`;
-        }).join('');
+        try {
+            const res = await fetch(baseUrl + '/api/stats');
+            const data = await res.json();
+            const m = data.monitor; const active = data.qwen.providers.filter(p => p.status === 'active').length;
+            document.getElementById('stats-grid').innerHTML = \`
+                <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value">\${Math.floor(m.uptime/3600)}h \${Math.floor(m.uptime%3600/60)}m</div></div>
+                <div class="stat-item"><div class="stat-label">Requests</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
+                <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>\`;
+            document.getElementById('provider-list').innerHTML = data.qwen.providers.map(p => {
+                const daily = p.quota?.chat?.daily || {used:0, limit:2000, percent:0};
+                const rpm = p.quota?.chat?.rpm || {used:0, limit:60, percent:0};
+                const alias = p.alias || 'Unnamed'; const safeId = encodeURIComponent(p.id);
+                return \`<tr>
+                    <td><div style="font-weight:700" class="alias-text">\${alias} <span onclick="openRename('\${safeId}', '\${escapeJS(alias)}')" style="cursor:pointer;opacity:0.5">✏️</span></div><div style="font-size:10px;color:var(--subtext);font-family:monospace" class="id-display">\${p.id}</div></td>
+                    <td><span class="badge badge-\${p.status}">\${p.status}</span></td>
+                    <td>\${p.lastLatency ? p.lastLatency+'ms' : '-'}</td>
+                    <td><div style="font-size:9px">\${daily.used}/\${daily.limit}</div><div class="progress-bg"><div class="progress-fill" style="width:\${daily.percent}%"></div></div></td>
+                    <td><div style="font-size:9px">\${rpm.used}/\${rpm.limit}</div><div class="progress-bg"><div class="progress-fill" style="width:\${rpm.percent}%"></div></div></td>
+                    <td><div style="display:flex;gap:4px">
+                        \${p.status==='error'?\`<button class="btn btn-outline btn-sm" onclick="showReAuthModal('\${safeId}', '\${escapeJS(alias)}')">Login</button>\`:''}
+                        <button class="btn btn-danger btn-sm" onclick="deleteProvider('\${safeId}')">Del</button>
+                    </div></td>
+                </tr>\`;
+            }).join('');
+        } catch (e) { console.error('Stats failed', e); }
     }
-    function showAddModal() { currentAuthId=null; document.getElementById('step1').style.display='block'; document.getElementById('step2').style.display='none'; document.getElementById('authModal').style.display='flex'; }
+    function showModal(id) { const m = document.getElementById(id); m.style.display='flex'; setTimeout(() => m.classList.add('show'), 10); }
+    function hideModal(id) { const m = document.getElementById(id); m.classList.remove('show'); setTimeout(() => m.style.display='none', 200); }
+    function showAddModal() { currentAuthId=null; document.getElementById('step1').style.display='block'; document.getElementById('step2').style.display='none'; showModal('authModal'); }
     async function startAuthFlow() {
         const alias = currentAuthId ? null : (document.getElementById('accountAlias').value || 'New Account');
         const res = await fetch(baseUrl + '/api/auth/start', { method: 'POST' });
@@ -100,22 +106,23 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     }
     async function checkAuth(deviceCode, alias) {
         const res = await fetch(baseUrl + '/api/auth/poll', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ device_code: deviceCode, target_id: currentAuthId, alias }) });
-        const data = await res.json(); if (data.status === 'success') { closeModal(); loadData(); }
+        const data = await res.json(); if (data.status === 'success') { clearInterval(pollInterval); closeModal(); loadData(); }
     }
-    function showReAuthModal(id, alias) { currentAuthId = id; startAuthFlow(); }
-    function openRename(id, alias) { document.getElementById('renameInput').value = alias; document.getElementById('renameModal').style.display='flex'; document.getElementById('renameBtn').onclick = () => submitRename(id); }
+    function showReAuthModal(id, alias) { currentAuthId = id; startAuthFlow(); showModal('authModal'); }
+    function openRename(id, alias) { document.getElementById('renameInput').value = alias; showModal('renameModal'); document.getElementById('renameBtn').onclick = () => submitRename(id); }
     async function submitRename(id) {
         await fetch(baseUrl + '/api/providers/alias?id=' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ alias: document.getElementById('renameInput').value }) });
         closeRenameModal(); loadData();
     }
     async function deleteProvider(id) { if(confirm('Delete?')) { await fetch(baseUrl + '/api/providers?id=' + encodeURIComponent(id), { method: 'DELETE' }); loadData(); } }
-    function closeModal() { if(pollInterval) clearInterval(pollInterval); document.getElementById('authModal').style.display='none'; }
-    function closeRenameModal() { document.getElementById('renameModal').style.display='none'; }
+    function closeModal() { if(pollInterval) clearInterval(pollInterval); hideModal('authModal'); }
+    function closeRenameModal() { hideModal('renameModal'); }
     loadData(); setInterval(loadData, 5000);
 </script></body></html>`;
         return c.html(html);
     });
 
+    // ... (rest of the file remains same)
     // API: Stats
     app.get('/api/stats', (c) => c.json({ monitor: monitor.getStats(), qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: qwenProvider.getAllProviderStatus() } }));
 
@@ -148,20 +155,18 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         } catch (e: any) { return c.json({ status: 'error', message: e.message }); }
     });
 
-    // API: Rename (Using Query Parameter for ID)
+    // API: Rename
     app.patch('/api/providers/alias', async (c) => {
-        const id = c.req.query('id');
-        if (!id) return c.json({ error: 'Missing id' }, 400);
+        const id = decodeURIComponent(c.req.query('id') || '');
         const { alias } = await c.req.json();
         const data = await storage.get(id);
         if (data) { data.alias = alias; await storage.set(id, data); await qwenProvider.addProvider(id); }
         return c.json({ success: true });
     });
 
-    // API: Delete (Using Query Parameter for ID)
+    // API: Delete
     app.delete('/api/providers', async (c) => {
-        const id = c.req.query('id');
-        if (!id) return c.json({ error: 'Missing id' }, 400);
+        const id = decodeURIComponent(c.req.query('id') || '');
         await storage.delete(id); await qwenProvider.removeProvider(id);
         return c.json({ success: true });
     });
