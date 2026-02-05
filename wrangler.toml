@@ -10,7 +10,10 @@ binding = "AUTH_STORE"
 id = "f02f525d1f1e4f129183858979a6fc22" 
 
 [vars]
+# [移除] API_KEY = "" 
+# 彻底移除此行，防止覆盖 Dashboard 中的配置。
+# 请务必在 Cloudflare 后台配置 API_KEY。
+
 LOG_LEVEL = "INFO"
-# 默认配额
 CHAT_DAILY_LIMIT = "2000"
 CHAT_RPM_LIMIT = "60"
