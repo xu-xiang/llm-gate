@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "AUTH_STORE"
 # 必须保留 id 字段以通过 wrangler 校验。
 # 线上会自动使用你在 Cloudflare 控制台 Settings -> Bindings 中手动关联的真实 ID。
-id = "7814bb17e11b5475e109cecb71b1a1f7" 
+id = "f02f525d1f1e4f129183858979a6fc22" 
 
 [vars]
 LOG_LEVEL = "INFO"
