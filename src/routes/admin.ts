@@ -6,10 +6,11 @@ import { monitor } from '../core/monitor';
 import { logger } from '../core/logger';
 import crypto from 'node:crypto';
 
-export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider, clientId: string) {
-    const app = new Hono();
-
-    app.get('/ui', (c) => {
+// 注意：这里不再导出一个 Hono app，而是导出一个配置函数
+export function setupAdminRoutes(app: Hono, basePath: string, storage: IStorage, qwenProvider: MultiQwenProvider, clientId: string) {
+    
+    // UI Page
+    app.get(`${basePath}/ui`, (c) => {
         const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -41,7 +42,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         .btn-primary { background: var(--primary); color: white; }
         .btn-outline { background: white; color: var(--text); border: 1px solid var(--border); }
         .btn-danger { color: var(--danger); background: #fff1f2; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; opacity: 0; transition: opacity 0.2s; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; z-index: 100; opacity: 0; transition: opacity 0.2s; }
         .modal.show { opacity: 1; display: flex; }
         .modal-content { background: white; padding: 30px; border-radius: 12px; width: 400px; text-align: center; }
         .code-display { font-family: monospace; font-size: 2rem; background: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0; color: var(--primary); border: 2px dashed #cbd5e1; }
@@ -49,7 +50,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
 </head>
 <body>
 <div class="container">
-    <div class="header"><h1>⚡ LLM GATEWAY</h1><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button></div></div>
+    <div class="header"><h1><span>⚡</span> LLM Gateway</h1><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button></div></div>
     <div class="stats-grid" id="stats-grid"></div>
     <div class="card"><h2>Account Pool</h2><div style="overflow-x:auto"><table><thead><tr><th>Account / Alias</th><th>Status</th><th>Latency</th><th>Usage</th><th>RPM</th><th>Actions</th></tr></thead><tbody id="provider-list"></tbody></table></div></div>
 </div>
@@ -108,7 +109,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         const res = await fetch(baseUrl + '/api/auth/poll', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ device_code: deviceCode, target_id: currentAuthId, alias }) });
         const data = await res.json(); if (data.status === 'success') { clearInterval(pollInterval); closeModal(); loadData(); }
     }
-    function showReAuthModal(id, alias) { currentAuthId = id; startAuthFlow(); showModal('authModal'); }
+    function showReAuthModal(id, alias) { currentAuthId = decodeURIComponent(id); startAuthFlow(); showModal('authModal'); }
     function openRename(id, alias) { document.getElementById('renameInput').value = alias; showModal('renameModal'); document.getElementById('renameBtn').onclick = () => submitRename(id); }
     async function submitRename(id) {
         await fetch(baseUrl + '/api/providers/alias?id=' + encodeURIComponent(id), { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ alias: document.getElementById('renameInput').value }) });
@@ -122,12 +123,11 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         return c.html(html);
     });
 
-    // ... (rest of the file remains same)
     // API: Stats
-    app.get('/api/stats', (c) => c.json({ monitor: monitor.getStats(), qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: qwenProvider.getAllProviderStatus() } }));
+    app.get(`${basePath}/api/stats`, (c) => c.json({ monitor: monitor.getStats(), qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: qwenProvider.getAllProviderStatus() } }));
 
     // API: Start Auth
-    app.post('/api/auth/start', async (c) => {
+    app.post(`${basePath}/api/auth/start`, async (c) => {
         const verifier = generateCodeVerifier();
         const challenge = generateCodeChallenge(verifier);
         const tempAuth = new QwenAuthManager(storage, 'temp', clientId);
@@ -137,7 +137,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     });
 
     // API: Poll Auth
-    app.post('/api/auth/poll', async (c) => {
+    app.post(`${basePath}/api/auth/poll`, async (c) => {
         const { device_code, target_id, alias } = await c.req.json();
         const pending = await storage.get(`pending_${device_code}`);
         if (!pending) return c.json({ status: 'pending' });
@@ -156,8 +156,9 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     });
 
     // API: Rename
-    app.patch('/api/providers/alias', async (c) => {
-        const id = decodeURIComponent(c.req.query('id') || '');
+    app.patch(`${basePath}/api/providers/alias`, async (c) => {
+        const id = c.req.query('id');
+        if (!id) return c.json({ error: 'Missing id' }, 400);
         const { alias } = await c.req.json();
         const data = await storage.get(id);
         if (data) { data.alias = alias; await storage.set(id, data); await qwenProvider.addProvider(id); }
@@ -165,11 +166,10 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     });
 
     // API: Delete
-    app.delete('/api/providers', async (c) => {
-        const id = decodeURIComponent(c.req.query('id') || '');
+    app.delete(`${basePath}/api/providers`, async (c) => {
+        const id = c.req.query('id');
+        if (!id) return c.json({ error: 'Missing id' }, 400);
         await storage.delete(id); await qwenProvider.removeProvider(id);
         return c.json({ success: true });
     });
-
-    return app;
 }

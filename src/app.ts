@@ -7,7 +7,7 @@ import { MultiQwenProvider } from './providers/qwen/multiProvider';
 import { createChatRouter } from './routes/chat';
 import { createDashboardRouter } from './routes/dashboard';
 import { createToolsRouter } from './routes/tools';
-import { createAdminRouter } from './routes/admin';
+import { setupAdminRoutes } from './routes/admin';
 import { quotaManager } from './core/quota';
 import { IStorage } from './core/storage';
 
@@ -40,14 +40,16 @@ export async function createApp(config: AppConfig, storage: IStorage) {
     app.route('/', createDashboardRouter());
     app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }));
 
-    // 2. 管理路由 (显式挂载)
+    // 2. 管理路由 (扁平化挂载，解决 404)
     const key = (config.api_key || 'admin').trim();
-    logger.info(`Admin UI mounting at /${key}/ui`);
-
     if (qwenProvider) {
-        const adminApp = createAdminRouter(storage, qwenProvider, config.qwen_oauth_client_id);
-        app.route(`/${key}`, adminApp);
+        // 直接在当前 app 上注册所有管理路由，前缀为 /key
+        setupAdminRoutes(app, `/${key}`, storage, qwenProvider, config.qwen_oauth_client_id);
+        
+        // 自动重定向
         app.get(`/${key}`, (c) => c.redirect(`/${key}/ui`));
+        
+        logger.info(`Admin UI flattened at /${key}/ui`);
     }
 
     // 3. API 权限验证
