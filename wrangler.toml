@@ -5,16 +5,10 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "AUTH_STORE"
-id = "PLACEHOLDER_FOR_KV_ID"
+# 注意：手动部署时请在 Cloudflare 控制台 Settings -> Bindings 中手动关联 KV 空间
+# 不要在这里写死的 ID，除非你是在本地进行命令行部署
 
 [vars]
-# [必填] 访问密码，同时决定了管理后台路径: /<API_KEY>/ui
-# 这里留空是为了让 Cloudflare 部署页面自动显示输入框
-API_KEY = ""
-
-# [可选] 日志级别: DEBUG, INFO, WARN, ERROR
+# 这里的变量建议全部在 Cloudflare Dashboard 的 Settings -> Variables 中配置
+# 以便享受加密存储和无需修改代码的便利。
 LOG_LEVEL = "INFO"
-
-# [可选] 默认配额设置
-CHAT_DAILY_LIMIT = "2000"
-CHAT_RPM_LIMIT = "60"
