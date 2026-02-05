@@ -1,7 +1,7 @@
-import { Request, Response } from 'express';
+import { Context } from 'hono';
 
 export interface LLMProvider {
-    handleChatCompletion(req: Request, res: Response): Promise<void>;
-    handleWebSearch(req: Request, res: Response): Promise<void>;
+    handleChatCompletion(c: Context): Promise<Response | void>;
+    handleWebSearch(c: Context): Promise<Response | void>;
     initialize(): Promise<void>;
 }

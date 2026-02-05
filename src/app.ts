@@ -1,46 +1,44 @@
-import express from 'express';
-import cors from 'cors';
-import crypto from 'crypto';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { logger as honoLogger } from 'hono/logger';
 import { AppConfig } from './config';
 import { logger, LogLevel } from './core/logger';
 import { MultiQwenProvider } from './providers/qwen/multiProvider';
 import { createChatRouter } from './routes/chat';
 import { createDashboardRouter } from './routes/dashboard';
 import { createToolsRouter } from './routes/tools';
+import { createAdminRouter } from './routes/admin'; // Import
 import { quotaManager } from './core/quota';
+import { IStorage } from './core/storage';
 
-export async function createApp(config: AppConfig) {
+export async function createApp(config: AppConfig, storage: IStorage) {
     // Set log level
     if (config.log_level) {
         logger.setLevel(LogLevel[config.log_level as keyof typeof LogLevel]);
     }
 
-    // Handle API Key
-    const apiKey = config.api_key || crypto.randomBytes(16).toString('hex');
-    if (!config.api_key) {
-        console.log('\n==================================================');
-        console.log('🛡️  SECURITY WARNING: No API Key configured.');
-        console.log('🔑 Generated temporary Master Token:');
-        console.log(`   ${apiKey}`);
-        console.log('==================================================\n');
-    }
-
-    const app = express();
-    app.use(cors());
-    app.use(express.json());
-
-    if (config.qwen_oauth_client_id) {
-        process.env.QWEN_OAUTH_CLIENT_ID = config.qwen_oauth_client_id;
-    }
+    const app = new Hono();
+    
+    // Middlewares
+    app.use('*', honoLogger());
+    app.use('*', cors());
 
     // Initialize Providers
     let qwenProvider: MultiQwenProvider | undefined;
     if (config.providers.qwen?.enabled) {
-        logger.info("Initializing Qwen Provider...");
-        qwenProvider = new MultiQwenProvider(config.providers.qwen.auth_files);
+        logger.info("Initializing Qwen Provider with KV storage...");
+        qwenProvider = new MultiQwenProvider(
+            storage, 
+            config.providers.qwen.auth_files,
+            config.qwen_oauth_client_id
+        );
+        // Note: In Workers, we might want to initialize on demand or use ctx.waitUntil
+        // but for now we follow the existing pattern.
         await qwenProvider.initialize();
     }
 
+    // Initialize Quota Manager
+    await quotaManager.init(storage);
     quotaManager.setLimits({
         chat: {
             daily: config.quota?.chat?.daily,
@@ -53,35 +51,46 @@ export async function createApp(config: AppConfig) {
     });
 
     // Routes - Public
-    app.use('/', createDashboardRouter(qwenProvider));
-    app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.0.0' }));
+    app.route('/', createDashboardRouter());
+    app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }));
 
-    // Auth Middleware for /v1 routes
-    app.use('/v1', (req, res, next) => {
-        const authHeader = req.headers.authorization;
-        const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
+    // Routes - Admin (Protected by Path Path)
+    // Access via: https://your-gateway.com/<API_KEY>/ui
+    if (qwenProvider) {
+        const adminPath = `/${config.api_key || 'admin'}`;
+        logger.info(`Mounting Admin UI at ${adminPath}/ui`);
+        app.route(adminPath, createAdminRouter(storage, qwenProvider, config.qwen_oauth_client_id));
+    }
 
-        if (providedToken === apiKey) {
-            return next();
-        }
+    // API Key Auth Middleware for /v1 routes
+    const apiKey = config.api_key;
+    if (apiKey) {
+        app.use('/v1/*', async (c, next) => {
+            const authHeader = c.req.header('Authorization');
+            const providedToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
 
-        logger.warn(`Unauthorized access attempt from ${req.ip}`);
-        res.status(401).json({
-            error: {
-                message: 'Unauthorized: Invalid or missing API Key. Use "Authorization: Bearer <token>"',
-                type: 'authentication_error'
+            if (providedToken === apiKey) {
+                return await next();
             }
+
+            logger.warn(`Unauthorized access attempt`);
+            return c.json({
+                error: {
+                    message: 'Unauthorized: Invalid or missing API Key.',
+                    type: 'authentication_error'
+                }
+            }, 401);
         });
-    });
+    }
 
     // Routes - Protected
-    app.use('/v1/chat', createChatRouter(qwenProvider, config.model_mappings));
-    app.use('/v1/tools', createToolsRouter(qwenProvider));
+    app.route('/v1/chat', createChatRouter(qwenProvider, config.model_mappings));
+    app.route('/v1/tools', createToolsRouter(qwenProvider));
 
-    // Global Error Handler
-    app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-        logger.error('Unhandled Express Error', err);
-        res.status(500).json({ error: 'Internal Server Error' });
+    // Error Handler
+    app.onError((err, c) => {
+        logger.error('Unhandled Hono Error', err);
+        return c.json({ error: 'Internal Server Error', message: err.message }, 500);
     });
 
     return app;

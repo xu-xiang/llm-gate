@@ -1,126 +1,89 @@
-# llm-gate (Research & Observability)
+# LLM CLI Gateway (Cloudflare Edition)
 
-本项目是一个专注于 **LLM 接口协议转换**与**服务可观测性**的技术研究项目。通过标准化的协议桥接，实现对异构模型接口响应特性的深度观测。
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/xu-xiang/llm-gate)
 
-![Dashboard UI](images/ui.png)
-*极简主义风格的实时观测仪表盘*
+这是一个专为 Cloudflare Workers 优化的 LLM 协议网关。本项目旨在通过 Serverless 架构，实现多账号负载均衡、自动 Token 刷新、以及极简的 Web 可视化管理。
 
-> [!IMPORTANT]
-> **免责与合规使用声明 (Exemption & Compliance Statement)**：
-> 
-> 1. **研究定位**：本项目（LLM Protocol Bridge）仅作为 **接口协议桥接** 与 **可观测性算法** 的技术研究方案。其核心逻辑在于探讨如何实现异构协议间的语义对齐，严禁将本项目用于任何违反法律法规或服务提供商政策的行为。
-> 2. **合规义务**：使用者在运行本项目前，**必须自行通过官方合规渠道获取相关授权凭证**（如 OAuth 客户端权限）。本项目不提供任何形式的账号、Token、绕过工具或非法接入途径。
-> 3. **行为边界**：使用者应严格遵守对应服务商的《开发者使用规范》及《服务条款》。严禁利用本项目进行任何可能导致上游资源负载异常、干扰服务运行或侵犯他人权益的操作。
-> 4. **免责条款**：
->    - 作为开源技术方案，本项目按“原样”提供，不附带任何明示或暗示的保证。
->    - 使用者因违反相关协议或不当操作所导致的任何后果（包括但不限于账号受限、法律纠纷或经济损失），**均由使用者本人承担全部责任**，本项目作者及贡献者对此不承担任何连带责任。
->    - 本项目的存在不代表对任何上游服务的任何形式的背书或关联。
-> 
-> **一旦使用本项目，即视为您已完全理解并接受上述所有条款。**
+> **技术初衷**：本项目仅用于技术探讨、接口协议兼容性验证及可观测性研究。使用前请确保您的行为符合相关服务商的开发者规范及法律法规。
 
-## 🔬 技术研究维度
+---
 
-- **语义协议映射验证**：研究如何将不同厂商的语义标识（Model Aliasing）转换为标准化接口。
-- **OAuth 交互流程自动化**：探索针对 Device Flow 授权模式的非阻塞式身份验证生命周期管理。
-- **端点健康感知逻辑**：探讨在多端点环境下验证故障转移与负载分发策略的有效性。
+## 🌟 核心特性
 
-## 🔐 身份验证与凭据管理
+- **🚀 深度适配 Cloudflare Workers**：基于 Hono 框架，全量适配 Web API，无缝运行在 Cloudflare 全球边缘节点。
+- **🏊‍♂️ 多账号池化 (Account Pooling)**：支持同时绑定多个 Qwen 账号，通过智能轮询实现配额扩容与故障自动转移。
+- **🔐 分布式并发控制**：引入 KV 分布式锁机制，完美解决 Serverless 环境下多实例并发刷新 Token 的 Race Condition 问题。
+- **📺 极简 Web 控制台**：
+  - **路径隐藏**：管理后台隐藏在 `/<API_KEY>/ui` 路径下，确保安全。
+  - **动态管理**：无需修改代码，直接在网页端添加、删除、重命名账号。
+  - **实时监控**：可视化展示各账号状态、延迟、每日配额 (Daily) 及每分钟请求数 (RPM)。
+- **🛠️ 流式传输优化**：内置 SSE Transformer，自动处理 Qwen API 偶尔产生的重复字符（SSE De-duplication），确保终端显示平滑。
+- **🔍 智能路由与配额感应**：在发起请求前预检本地配额，自动绕过已满额的账号，零延迟切换。
 
-项目支持两种凭据加载方式，确保研究环境的灵活配置：
+---
 
-### 1. 使用已有凭据
-在 `gateway.yaml` 的 `auth_files` 列表中指定已存在的 `.json` 路径，系统将直接加载。
+## 🚀 快速部署
 
-### 2. 交互式授权生成
-若指定的路径文件不存在，系统会自动启动 **OAuth Device Flow** 流程。您只需根据终端提示操作：
+### 方式一：一键部署 (推荐)
+点击顶部的 **[Deploy to Cloudflare Workers]** 蓝色按钮，按指引完成 KV 创建与环境变量配置即可。
 
-```text
-[INFO] Verifying token with active API check...
+### 方式二：手动部署
+1.  **创建 KV 空间**：
+    ```bash
+    npx wrangler kv:namespace create AUTH_STORE
+    ```
+2.  **修改配置**：将生成的 `id` 填入 `wrangler.toml` 的 `[[kv_namespaces]]` 部分。
+3.  **部署**：
+    ```bash
+    npm run deploy
+    ```
 
-==================================================
-      Qwen API Gateway Authentication Required
-==================================================
-Target File: ./oauth_creds_research.json
+---
 
-1. Open this URL in your browser:
-   https://chat.qwen.ai/authorize?user_code=CS-9UA0P&client=qwen-code
+## ⚙️ 环境变量配置
 
-2. Verify the code matches:
-   CS-9UA0P
+在部署页面或 Cloudflare Dashboard 设置以下变量：
 
-Waiting for you to approve in the browser...
-==================================================
-```
-授权完成后，系统会自动在指定路径生成对应的加密凭据文件。
+| 变量名 | 是否必填 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **`API_KEY`** | **是** | 无 | **访问密码**。决定了 API 调用权限及管理面路径 `/<API_KEY>/ui`。 |
+| **`LOG_LEVEL`** | 否 | `INFO` | 日志详细程度: `DEBUG`, `INFO`, `WARN`, `ERROR`。 |
+| **`CHAT_DAILY_LIMIT`**| 否 | `2000` | 每个账号默认每日聊天额度。 |
+| **`CHAT_RPM_LIMIT`** | 否 | `60` | 每个账号默认每分钟请求频率。 |
+| **`MODEL_MAPPINGS`** | 否 | `{"research-model-v1": "coder-model"}` | 模型名称映射 (JSON 格式)。 |
+| **`QWEN_CREDS_JSON`** | 否 | 无 | **自动播种**。可填入 `oauth_creds.json` 内容，首次启动自动写入 KV。 |
 
-### OAuth 客户端 ID 配置
+---
 
-项目默认使用 **qwen-code 的 OAuth client_id**，与官方客户端保持一致，位置参考：`packages/core/src/qwen/qwenOAuth2.ts`。
-如未来该值发生变化，可在 `gateway.yaml` 中覆盖：
+## 🖥️ 使用指引
 
-```yaml
-qwen_oauth_client_id: f0304373b74a44d2b584a3fb70ca9e56
-```
+1.  **管理后台**：访问 `https://<your-domain>/<API_KEY>/ui`。
+2.  **添加账号**：在后台点击 `Add Account`，按提示扫码或登录授权即可。
+3.  **API 调用**：
+    - **Base URL**: `https://<your-domain>/v1`
+    - **Headers**: `Authorization: Bearer <API_KEY>`
+    - **Models**: `coder-model`, `vision-model` 或通过映射使用的自定义名。
 
-> 说明：该值仅用于 OAuth Device Flow 的客户端标识，不包含密钥。
+---
 
-## 🧩 支持状态与路线图
+## 🧪 开发与测试
 
-- [x] **Qwen 协议适配模块**：针对特定 OAuth 流程的接口转换与观测验证。
-- [ ] **Gemini 协议适配模块**：*规划中*。
-- [ ] **通用标准化框架**：*规划中*。
-
-## 🚀 运行与调试
-
-### 1. 依赖构建
 ```bash
+# 安装依赖
 npm install
-npm run build
+
+# 本地模拟运行 (需要已配置好的 API_KEY)
+npm run dev
+
+# 运行全链路 E2E 测试 (Playwright)
+npm run test:e2e
 ```
 
-### 2. 启动研究环境
-```bash
-./bin/restart.sh
-```
-启动后访问 `http://localhost:3000` 即可进入极简观测台。
+---
 
-## 🔎 Web Search 接口（DashScope / Qwen OAuth）
+## 📂 目录结构说明
 
-Web Search 通过 Qwen OAuth 的 DashScope 搜索能力转发，提供统一的工具接口：
-
-**接口地址**
-```
-POST /v1/tools/web_search
-```
-
-**请求体**
-```json
-{
-  "query": "北京今天天气"
-}
-```
-
-**响应示例**
-```json
-{
-  "success": true,
-  "query": "北京今天天气",
-  "results": [
-    {
-      "title": "北京市天气预报",
-      "url": "https://tianqi.moji.com/weather/china/beijing/beijing",
-      "content": "北京市今天实况：-5度晴...",
-      "score": 0.9031,
-      "publishedDate": ""
-    }
-  ]
-}
-```
-
-**说明**
-- 需要已完成 Qwen OAuth 认证并具备有效 `oauth_creds.json`
-- Search 统计与 Chat 统计独立展示
-- 配额显示可在 `gateway.yaml` 的 `quota.search` 中配置（`0` 表示无限制，仅用于观测展示）
-
-## 📝 许可证
-本项目采用 MIT 许可证。
+- `src/core/`: 核心逻辑 (KV存储、分布式锁、流处理器)。
+- `src/providers/`: 模型适配器 (Qwen 认证与请求封装)。
+- `src/routes/`: 路由模块 (Admin UI, Chat API, Tools)。
+- `tests/e2e/`: 基于 Playwright 的自动化测试用例。

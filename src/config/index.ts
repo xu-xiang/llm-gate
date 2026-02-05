@@ -1,14 +1,15 @@
 import { z } from 'zod';
-import fs from 'fs-extra';
 import yaml from 'yaml';
-import { resolvePath } from '../utils/paths';
 import { logger } from '../core/logger';
 
 const ConfigSchema = z.object({
     port: z.number().default(3000),
-    api_key: z.string().optional(),
+    // API_KEY 设为必填字符串
+    api_key: z.string().min(1, "API_KEY is mandatory"),
     log_level: z.enum(['DEBUG', 'INFO', 'WARN', 'ERROR']).default('INFO'),
-    model_mappings: z.record(z.string(), z.string()).default({}),
+    model_mappings: z.record(z.string(), z.string()).default({
+        "research-model-v1": "coder-model"
+    }),
     qwen_oauth_client_id: z.string().default('f0304373b74a44d2b584a3fb70ca9e56'),
     quota: z.object({
         chat: z.object({
@@ -23,53 +24,54 @@ const ConfigSchema = z.object({
     providers: z.object({
         qwen: z.object({
             enabled: z.boolean().default(true),
-            auth_files: z.array(z.string()).default(['./oauth_creds.json']),
+            auth_files: z.array(z.string()).default(['oauth_creds.json']),
             rate_limit: z.object({
                 requests_per_minute: z.number().default(60)
             }).optional()
         }).optional()
-    })
+    }).default({})
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
 
-export const DEFAULT_CONFIG: AppConfig = ConfigSchema.parse({
-    port: 3000,
-    qwen_oauth_client_id: 'f0304373b74a44d2b584a3fb70ca9e56',
-    quota: {
-        chat: { daily: 2000, rpm: 60 },
-        search: { daily: 0, rpm: 0 }
-    },
-    providers: {
-        qwen: {
-            enabled: true,
-            auth_files: ['./oauth_creds.json']
-        }
-    }
-});
+export function loadConfig(env: any): AppConfig {
+    let baseConfig: any = {};
 
-export async function loadConfig(configPath: string): Promise<AppConfig> {
-    const resolvedConfigPath = resolvePath(configPath);
-    let rawConfig: any = {};
-
-    if (await fs.pathExists(resolvedConfigPath)) {
+    if (env.CONFIG_YAML) {
         try {
-            const file = await fs.readFile(resolvedConfigPath, 'utf8');
-            rawConfig = yaml.parse(file);
-            logger.info(`Loaded config from ${resolvedConfigPath}`);
+            baseConfig = yaml.parse(env.CONFIG_YAML);
         } catch (e) {
-            logger.error(`Failed to parse config file at ${resolvedConfigPath}, using defaults.`, e);
+            logger.error('Failed to parse CONFIG_YAML');
         }
-    } else {
-        logger.warn(`Config file not found at ${resolvedConfigPath}, using default settings.`);
     }
 
-    const config = ConfigSchema.parse(rawConfig);
-
-    // Resolve all auth file paths
-    if (config.providers.qwen) {
-        config.providers.qwen.auth_files = config.providers.qwen.auth_files.map(resolvePath);
+    if (env.API_KEY) baseConfig.api_key = env.API_KEY;
+    if (env.LOG_LEVEL) baseConfig.log_level = env.LOG_LEVEL;
+    if (env.QWEN_CLIENT_ID) baseConfig.qwen_oauth_client_id = env.QWEN_CLIENT_ID;
+    
+    if (env.MODEL_MAPPINGS) {
+        try {
+            baseConfig.model_mappings = typeof env.MODEL_MAPPINGS === 'string' 
+                ? JSON.parse(env.MODEL_MAPPINGS) 
+                : env.MODEL_MAPPINGS;
+        } catch (e) {
+            logger.error('Failed to parse MODEL_MAPPINGS JSON');
+        }
     }
 
-    return config;
+    if (!baseConfig.quota) baseConfig.quota = { chat: {}, search: {} };
+    if (env.CHAT_DAILY_LIMIT) baseConfig.quota.chat.daily = parseInt(env.CHAT_DAILY_LIMIT, 10);
+    if (env.CHAT_RPM_LIMIT) baseConfig.quota.chat.rpm = parseInt(env.CHAT_RPM_LIMIT, 10);
+    if (env.SEARCH_DAILY_LIMIT) baseConfig.quota.search.daily = parseInt(env.SEARCH_DAILY_LIMIT, 10);
+    if (env.SEARCH_RPM_LIMIT) baseConfig.quota.search.rpm = parseInt(env.SEARCH_RPM_LIMIT, 10);
+
+    try {
+        return ConfigSchema.parse(baseConfig);
+    } catch (e: any) {
+        if (e instanceof z.ZodError) {
+            const missing = e.issues.map((issue: any) => `${issue.path.join('.')}: ${issue.message}`).join(', ');
+            throw new Error(`Configuration Error: ${missing}`);
+        }
+        throw e;
+    }
 }

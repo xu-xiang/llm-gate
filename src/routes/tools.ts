@@ -1,22 +1,21 @@
-import express, { Request, Response } from 'express';
+import { Hono } from 'hono';
 import { LLMProvider } from '../providers/base';
-import { logger } from '../core/logger';
 
 export function createToolsRouter(qwenProvider?: LLMProvider) {
-    const router = express.Router();
+    const app = new Hono();
 
-    router.post('/web_search', async (req: Request, res: Response) => {
+    app.post('/web_search', async (c) => {
         if (qwenProvider) {
-            return qwenProvider.handleWebSearch(req, res);
+            return qwenProvider.handleWebSearch(c);
         }
 
-        res.status(404).json({
+        return c.json({
             error: {
                 message: "Web search tool not available",
                 type: 'invalid_request_error'
             }
-        });
+        }, 404);
     });
 
-    return router;
+    return app;
 }

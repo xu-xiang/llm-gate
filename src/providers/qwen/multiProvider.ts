@@ -1,41 +1,85 @@
-import { Request, Response } from 'express';
+import { Context } from 'hono';
 import { LLMProvider } from '../base';
 import { QwenProvider, ProviderStatus } from './provider';
 import { logger } from '../../core/logger';
+import { IStorage } from '../../core/storage';
+import { quotaManager } from '../../core/quota';
 
 export class MultiQwenProvider implements LLMProvider {
     private providers: QwenProvider[] = [];
     private currentIndex = 0;
+    private storage: IStorage;
+    private clientId: string;
+    private staticAuthFiles: string[];
 
-    constructor(authFiles: string[]) {
-        this.providers = authFiles.map(file => new QwenProvider(file));
+    constructor(storage: IStorage, authFiles: string[], clientId: string) {
+        this.storage = storage;
+        this.staticAuthFiles = authFiles;
+        this.clientId = clientId;
     }
 
     async initialize() {
-        // Start all initializations in parallel without blocking the main thread
-        this.providers.forEach(provider => {
-            provider.initialize().catch(err => {
-                logger.error(`Background initialization failed for provider ${provider.getStatus().id}`, err);
-            });
-        });
-        
-        // Start background recovery loop (every 5 minutes)
-        setInterval(() => {
-            this.recoverErrorProviders();
-        }, 5 * 60 * 1000);
-
-        // Return immediately to allow the server to start
-        return Promise.resolve();
+        await this.scanAndLoadProviders();
     }
 
-    private async recoverErrorProviders() {
-        const errorProviders = this.providers.filter(p => p.getStatus().status === 'error');
-        if (errorProviders.length > 0) {
-            logger.info(`🔄 Attempting auto-recovery for ${errorProviders.length} error providers...`);
-            for (const provider of errorProviders) {
-                provider.initialize().catch(() => {}); // Attempt re-init
+    private async scanAndLoadProviders() {
+        // 1. Get dynamic keys from storage (those starting with qwen_creds_)
+        const dynamicKeys = await this.storage.list('qwen_creds_');
+        
+        // 2. Candidate keys = Static config + Dynamic keys
+        const candidateKeys = Array.from(new Set([...this.staticAuthFiles, ...dynamicKeys]));
+        
+        // 3. VALIDATION: Only keep keys that REALLY exist in storage
+        // This is the fix: if you deleted it from UI (KV), it stays deleted even if in YAML.
+        const validKeys: string[] = [];
+        for (const key of candidateKeys) {
+            const exists = await this.storage.get(key);
+            if (exists) {
+                validKeys.push(key);
+            } else {
+                logger.debug(`Skipping provider key ${key} as it does not exist in storage.`);
             }
         }
+
+        logger.info(`Loading ${validKeys.length} active providers...`);
+
+        const currentMap = new Map(this.providers.map(p => [p.getStatus().id, p]));
+        const newProviders: QwenProvider[] = [];
+        const initPromises: Promise<void>[] = [];
+
+        for (const key of validKeys) {
+            if (currentMap.has(key)) {
+                newProviders.push(currentMap.get(key)!);
+            } else {
+                const p = new QwenProvider(this.storage, key, this.clientId);
+                initPromises.push(p.initialize());
+                newProviders.push(p);
+            }
+        }
+
+        if (initPromises.length > 0) {
+            await Promise.allSettled(initPromises);
+        }
+
+        this.providers = newProviders;
+    }
+
+    public async addProvider(credsKey: string) {
+        // If provider exists, reload it to pick up changes (e.g. alias update or new token)
+        const existing = this.providers.find(p => p.getStatus().id === credsKey);
+        if (existing) {
+            logger.info(`Reloading provider ${credsKey}...`);
+            await existing.reload();
+        } else {
+            // New provider, rescan
+            await this.scanAndLoadProviders();
+        }
+    }
+
+    public async removeProvider(credsKey: string) {
+        // Assume storage delete happens outside, we just re-scan
+        // Or we filter manually
+        this.providers = this.providers.filter(p => p.getStatus().id !== credsKey);
     }
 
     public getAllProviderStatus(): ProviderStatus[] {
@@ -46,81 +90,110 @@ export class MultiQwenProvider implements LLMProvider {
         return this.currentIndex;
     }
 
-    async handleChatCompletion(req: Request, res: Response): Promise<void> {
+    async handleChatCompletion(c: Context): Promise<Response | void> {
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
-            res.status(500).json({ error: 'No Qwen providers configured' });
-            return;
+            return c.json({ error: 'No Qwen providers configured' }, 500);
         }
 
-        // 尝试所有可能的 Provider，直到成功或全部失败
         let lastError: any = null;
+        let triedCount = 0;
+
+        // Try rotating through all providers
         for (let attempt = 0; attempt < availableProviders; attempt++) {
             const providerIndex = (this.currentIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
             const status = provider.getStatus();
 
-            // 如果该 Provider 还没准备好（初始化中或已报错）且不是最后一次尝试，跳过它
-            if ((status.status === 'error' || status.status === 'initializing') && attempt < availableProviders - 1) {
+            // 1. Skip if provider is dead or initializing (unless it's the only one, then maybe wait?)
+            if (status.status === 'error' && attempt < availableProviders - 1) {
                 continue;
             }
 
+            // 2. SMART ROUTING: Check local quota BEFORE making request
+            // If we know this provider is out of quota, don't even try it.
+            if (!quotaManager.checkQuota(status.id, 'chat')) {
+                // Only log warning if we are skipping. If all are skipped, we'll return error at end.
+                // logger.debug(`Skipping provider ${status.id} due to local quota limit.`);
+                continue;
+            }
+
+            triedCount++;
+
             try {
-                // 更新下一次轮询的起始位置
+                // Update sticky index for next request
                 if (attempt === 0) {
                     this.currentIndex = (this.currentIndex + 1) % availableProviders;
                 }
 
                 logger.debug(`Attempting request with provider: ${status.id} (Attempt ${attempt + 1})`);
                 
-                // 注意：如果 provider 内部处理了 res 响应，我们需要捕获是否真的“成功”
-                // 为了支持重试，我们需要稍微重构 handleChatCompletion 或者让它抛出可重试的错误
-                // 这里我们暂且假设如果进入了 catch 块或者返回了特定错误，则进行重试
-                return await provider.handleChatCompletion(req, res);
+                return await provider.handleChatCompletion(c);
             } catch (err: any) {
                 lastError = err;
                 logger.warn(`Provider ${status.id} failed, trying next... Error: ${err.message}`);
-                // 继续循环，尝试下一个
             }
         }
 
-        // 如果走到这里，说明全部失败
-        res.status(500).json({ 
+        if (triedCount === 0) {
+            return c.json({ 
+                error: 'Quota Exceeded', 
+                message: 'All providers have reached their daily or rate limits locally.' 
+            }, 429);
+        }
+
+        return c.json({ 
             error: 'All providers failed', 
             details: lastError?.message 
-        });
+        }, 500);
     }
 
-    async handleWebSearch(req: Request, res: Response): Promise<void> {
+    async handleWebSearch(c: Context): Promise<Response | void> {
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
-            res.status(500).json({ error: 'No Qwen providers configured' });
-            return;
+            return c.json({ error: 'No Qwen providers configured' }, 500);
         }
 
         let lastError: any = null;
+        let triedCount = 0;
+
         for (let attempt = 0; attempt < availableProviders; attempt++) {
             const providerIndex = (this.currentIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
             const status = provider.getStatus();
 
-            if ((status.status === 'error' || status.status === 'initializing') && attempt < availableProviders - 1) {
+            if (status.status === 'error' && attempt < availableProviders - 1) {
                 continue;
             }
+
+            // SMART ROUTING CHECK
+            if (!quotaManager.checkQuota(status.id, 'search')) {
+                continue;
+            }
+
+            triedCount++;
 
             try {
                 if (attempt === 0) {
                     this.currentIndex = (this.currentIndex + 1) % availableProviders;
                 }
-                return await provider.handleWebSearch(req, res);
+                return await provider.handleWebSearch(c);
             } catch (err: any) {
                 lastError = err;
                 logger.warn(`Search failed with provider ${status.id}, trying next...`);
             }
         }
 
-        res.status(500).json({ error: 'All search providers failed', details: lastError?.message });
+        if (triedCount === 0) {
+            return c.json({ 
+                error: 'Quota Exceeded', 
+                message: 'All search providers have reached their limits.' 
+            }, 429);
+        }
+
+        return c.json({ error: 'All search providers failed', details: lastError?.message }, 500);
     }
 }
+
 
 

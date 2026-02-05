@@ -7,6 +7,7 @@ export interface QwenCredentials {
     created_at?: number;
     resource_url?: string;
     expiry_date?: number; // Optional: Some clients use this instead of created_at + expires_in
+    alias?: string; // User-defined name for the account
 }
 
 export interface SearchResult {

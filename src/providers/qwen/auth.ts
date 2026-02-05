@@ -1,9 +1,7 @@
-import fs from 'fs-extra';
-import path from 'path';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 import { logger } from '../../core/logger';
+import { IStorage } from '../../core/storage';
 import {
-    getQwenOauthClientId,
     QWEN_OAUTH_DEVICE_CODE_ENDPOINT,
     QWEN_OAUTH_GRANT_TYPE,
     QWEN_OAUTH_SCOPE,
@@ -28,161 +26,128 @@ function objectToUrlEncoded(data: Record<string, string>): string {
 }
 
 export class QwenAuthManager {
-    private credsPath: string;
+    private storage: IStorage;
+    private credsKey: string;
+    private clientId: string;
     private memoryCredentials?: QwenCredentials;
-    private lastFileModTime: number = 0;
 
-    constructor(credsPath: string) {
-        this.credsPath = credsPath;
+    constructor(storage: IStorage, credsKey: string, clientId: string) {
+        this.storage = storage;
+        this.credsKey = credsKey;
+        this.clientId = clientId;
     }
 
-    public getCredsPath(): string {
-        return this.credsPath;
+    public clearCache() {
+        this.memoryCredentials = undefined;
     }
 
     private async loadCredentials(): Promise<QwenCredentials | null> {
         try {
-            if (await fs.pathExists(this.credsPath)) {
-                const stats = await fs.stat(this.credsPath);
-                
-                if (this.memoryCredentials && stats.mtimeMs <= this.lastFileModTime) {
-                    return this.memoryCredentials;
-                }
-
-                logger.info(`Loading credentials from disk: ${this.credsPath}`);
-                const data = await fs.readJson(this.credsPath);
-                
-                if (!data.access_token) {
-                    logger.warn('Invalid credentials in file: missing access_token');
-                    return null;
-                }
-                
+            const data = await this.storage.get(this.credsKey);
+            if (data && data.access_token) {
                 this.memoryCredentials = data;
-                this.lastFileModTime = stats.mtimeMs;
                 return data;
             }
         } catch (error) {
-            logger.warn(`Failed to read credentials from ${this.credsPath}:`, error);
+            logger.warn(`Failed to read credentials from storage key ${this.credsKey}:`, error);
         }
         return null;
     }
 
     private async saveCredentials(creds: QwenCredentials): Promise<void> {
-        const tempPath = `${this.credsPath}.tmp.${crypto.randomUUID()}`;
         try {
-            await fs.ensureDir(path.dirname(this.credsPath));
-            await fs.writeJson(tempPath, creds, { spaces: 2 });
-            await fs.rename(tempPath, this.credsPath);
-            
-            const stats = await fs.stat(this.credsPath);
+            await this.storage.set(this.credsKey, creds);
             this.memoryCredentials = creds;
-            this.lastFileModTime = stats.mtimeMs;
-            logger.info('Credentials saved successfully.');
+            logger.info(`Credentials saved successfully for ${this.credsKey}.`);
         } catch (error) {
-            logger.error(`Failed to save credentials atomically to ${this.credsPath}`, error);
-            if (await fs.pathExists(tempPath)) {
-                await fs.unlink(tempPath).catch(() => {});
-            }
+            logger.error(`Failed to save credentials to storage key ${this.credsKey}`, error);
             throw error;
         }
     }
 
     public async startDeviceAuth(codeChallenge: string): Promise<DeviceAuthorizationResponse> {
-        try {
-            const bodyData = {
-                client_id: getQwenOauthClientId(),
-                scope: QWEN_OAUTH_SCOPE,
-                code_challenge: codeChallenge,
-                code_challenge_method: 'S256',
-            };
+        const bodyData = {
+            client_id: this.clientId,
+            scope: QWEN_OAUTH_SCOPE,
+            code_challenge: codeChallenge,
+            code_challenge_method: 'S256',
+        };
 
-            const response = await fetch(QWEN_OAUTH_DEVICE_CODE_ENDPOINT, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json'
-                },
-                body: objectToUrlEncoded(bodyData)
-            });
+        const response = await fetch(QWEN_OAUTH_DEVICE_CODE_ENDPOINT, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
+            },
+            body: objectToUrlEncoded(bodyData)
+        });
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errorText}`);
-            }
-
-            return await response.json() as DeviceAuthorizationResponse;
-        } catch (error: any) {
-             logger.error('Device auth request failed', error);
-             throw new Error('Failed to initiate device authentication');
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
+
+        return await response.json() as DeviceAuthorizationResponse;
     }
 
-    public async pollForToken(deviceCode: string, codeVerifier: string, interval: number): Promise<QwenCredentials> {
-        // Use server provided interval or default to 5 seconds
-        const safeInterval = (typeof interval === 'number' && !isNaN(interval)) ? interval : 5;
-        const intervalMs = safeInterval * 1000;
-        
-        return new Promise<QwenCredentials>((resolve, reject) => {
-            const poll = async () => {
-                try {
-                    const bodyData = {
-                        grant_type: QWEN_OAUTH_GRANT_TYPE,
-                        client_id: getQwenOauthClientId(),
-                        device_code: deviceCode,
-                        code_verifier: codeVerifier
-                    };
+    public async exchangeDeviceCode(deviceCode: string, codeVerifier: string): Promise<QwenCredentials | 'pending'> {
+        const bodyData = {
+            grant_type: QWEN_OAUTH_GRANT_TYPE,
+            client_id: this.clientId,
+            device_code: deviceCode,
+            code_verifier: codeVerifier
+        };
 
-                    const response = await fetch(QWEN_OAUTH_TOKEN_ENDPOINT, {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                            'Accept': 'application/json'
-                        },
-                        body: objectToUrlEncoded(bodyData)
-                    });
-
-                    const data = await response.json() as any;
-
-                    if (!response.ok) {
-                        const errorData = data as QwenErrorResponse;
-                        if (errorData?.error === 'authorization_pending') {
-                            setTimeout(poll, intervalMs);
-                            return;
-                        } else if (errorData?.error === 'slow_down') {
-                            setTimeout(poll, intervalMs + 2000);
-                            return;
-                        } else {
-                            reject(new Error(errorData?.error_description || errorData?.error || 'Unknown error during polling'));
-                            return;
-                        }
-                    }
-
-                    const creds: QwenCredentials = {
-                        access_token: data.access_token,
-                        refresh_token: data.refresh_token,
-                        token_type: data.token_type,
-                        resource_url: data.resource_url,
-                        expiry_date: Date.now() + (data.expires_in * 1000),
-                        scope: data.scope
-                    };
-
-                    await this.saveCredentials(creds);
-                    resolve(creds);
-
-                } catch (error: any) {
-                    reject(new Error(error.message));
-                }
-            };
-            poll();
+        const response = await fetch(QWEN_OAUTH_TOKEN_ENDPOINT, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
+            },
+            body: objectToUrlEncoded(bodyData)
         });
+
+        const data = await response.json() as any;
+
+        if (!response.ok) {
+            const errorData = data as QwenErrorResponse;
+            if (errorData?.error === 'authorization_pending' || errorData?.error === 'slow_down') {
+                return 'pending';
+            }
+            throw new Error(errorData?.error_description || errorData?.error || 'Unknown error');
+        }
+
+        return {
+            access_token: data.access_token,
+            refresh_token: data.refresh_token,
+            token_type: data.token_type,
+            resource_url: data.resource_url,
+            expiry_date: Date.now() + (data.expires_in * 1000),
+            scope: data.scope
+        };
     }
 
     public async refreshToken(refreshToken: string): Promise<QwenCredentials> {
-        logger.info('Refreshing Qwen token...');
+        // 使用独立的锁名称，防止不同账号互相阻塞
+        const lockName = `token_refresh:${this.credsKey}`;
+        const lockToken = await this.storage.acquireLock(lockName, 60);
+        
+        if (!lockToken) {
+            logger.info(`Another instance is refreshing token for ${this.credsKey}. Waiting...`);
+            return await this.waitForTokenUpdate(refreshToken);
+        }
+
         try {
+            // 双重检查：获取锁后再次读取，可能其它进程已经刷新好了
+            const latest = await this.loadCredentials();
+            if (latest && latest.access_token && latest.refresh_token !== refreshToken) {
+                 return latest;
+            }
+
+            logger.info(`Performing real token refresh for ${this.credsKey}...`);
             const bodyData = {
                 grant_type: 'refresh_token',
-                client_id: getQwenOauthClientId(),
+                client_id: this.clientId,
                 refresh_token: refreshToken
             };
 
@@ -197,11 +162,14 @@ export class QwenAuthManager {
 
              if (!response.ok) {
                  const errorText = await response.text();
+                 if (response.status === 400 || response.status === 401) {
+                     logger.error(`Refresh token has expired or is invalid for ${this.credsKey}. Manual login required.`);
+                     throw new Error('AUTH_EXPIRED');
+                 }
                  throw new Error(`HTTP ${response.status}: ${errorText}`);
              }
 
              const data = await response.json() as any;
-             
              const creds: QwenCredentials = {
                 access_token: data.access_token,
                 refresh_token: data.refresh_token || refreshToken,
@@ -212,83 +180,75 @@ export class QwenAuthManager {
             };
 
             await this.saveCredentials(creds);
-            logger.info('Token refreshed successfully.');
             return creds;
-        } catch (error: any) {
-            logger.error('Refresh token failed', error);
-            throw new Error('Failed to refresh token');
+        } finally {
+            await this.storage.releaseLock(lockName, lockToken);
         }
+    }
+
+    private async waitForTokenUpdate(oldRefreshToken: string): Promise<QwenCredentials> {
+        const maxRetries = 30; // 15s
+        for (let i = 0; i < maxRetries; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const creds = await this.loadCredentials();
+            if (creds && creds.refresh_token !== oldRefreshToken) {
+                return creds;
+            }
+            // 额外检查锁是否释放，如果锁没了但 token 没变，说明上次刷新失败了
+            const lockExists = await this.storage.get(`lock:token_refresh:${this.credsKey}`);
+            if (!lockExists && i > 2) break; 
+        }
+        throw new Error('Timeout or failure waiting for token update');
+    }
+
+    public getCachedAlias(): string | undefined {
+        return this.memoryCredentials?.alias;
     }
 
     public async checkTokenValidity(creds: QwenCredentials): Promise<boolean> {
         try {
             const baseUrl = creds.resource_url || 'portal.qwen.ai';
-            const suffix = '/v1';
             let normalizedUrl = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
             if (normalizedUrl.endsWith('/')) normalizedUrl = normalizedUrl.slice(0, -1);
-            if (!normalizedUrl.endsWith(suffix)) normalizedUrl = `${normalizedUrl}${suffix}`;
-            
-            const url = `${normalizedUrl}/chat/completions`;
+            const url = `${normalizedUrl}/v1/chat/completions`;
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${creds.access_token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    model: 'coder-model',
-                    messages: [{ role: 'user', content: 'ping' }],
-                    max_tokens: 1
-                })
-            });
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s 验证超时
 
-            if (response.ok) return true;
-            if (response.status === 401) return false;
-            
-            return true;
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${creds.access_token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'coder-model',
+                        messages: [{ role: 'user', content: 'ping' }],
+                        max_tokens: 1
+                    }),
+                    signal: controller.signal
+                });
+                return response.status === 200;
+            } finally {
+                clearTimeout(timeoutId);
+            }
         } catch (e) {
-            logger.warn('Token validity check failed (network issue)', e);
-            return true; 
+            return true; // 网络问题暂且认为有效，避免循环刷新
         }
     }
 
     public async getValidCredentials(): Promise<QwenCredentials> {
-        let creds = await this.loadCredentials();
-
-        if (!creds) {
-            throw new Error('No credentials found.');
-        }
+        const creds = await this.loadCredentials();
+        if (!creds) throw new Error('No credentials found.');
 
         const now = Date.now();
-        let expiresAt = creds.expiry_date || 0;
+        const expiresAt = creds.expiry_date || 0;
         
-        if (!expiresAt && creds.expires_in && creds.created_at) {
-            expiresAt = creds.created_at + (creds.expires_in * 1000);
-        }
-
+        // 提前 5 分钟刷新
         if (expiresAt && now >= expiresAt - 300000) {
             return await this.refreshToken(creds.refresh_token);
         }
-
         return creds;
-    }
-
-    public async authenticateInteractive(): Promise<QwenCredentials> {
-        const codeVerifier = generateCodeVerifier();
-        const codeChallenge = generateCodeChallenge(codeVerifier);
-
-        const authData = await this.startDeviceAuth(codeChallenge);
-        
-        console.log('\n==================================================');
-        console.log('      Qwen API Gateway Authentication Required');
-        console.log('==================================================');
-        console.log(`Target File: ${this.credsPath}`); // 增加这一行
-        console.log(`\n1. Open this URL in your browser:\n   ${authData.verification_uri_complete}`);
-        console.log(`\n2. Verify the code matches:\n   ${authData.user_code}`);
-        console.log('\nWaiting for you to approve in the browser...');
-        console.log('==================================================\n');
-
-        return this.pollForToken(authData.device_code, codeVerifier, authData.interval);
     }
 }

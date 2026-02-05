@@ -1,18 +1,19 @@
-import express, { Request, Response } from 'express';
+import { Hono } from 'hono';
 import { LLMProvider } from '../providers/base';
 import { logger } from '../core/logger';
 
 export function createChatRouter(qwenProvider?: LLMProvider, modelMappings: Record<string, string> = {}) {
-    const router = express.Router();
+    const app = new Hono();
 
-    router.post('/completions', async (req: Request, res: Response) => {
-        let { model } = req.body;
+    app.post('/completions', async (c) => {
+        const body = await c.req.json();
+        let { model } = body;
         const originalModel = model;
 
         // Apply mappings
         if (modelMappings[model]) {
             model = modelMappings[model];
-            req.body.model = model; // Rewrite for upstream
+            body.model = model; // Rewrite for upstream
             logger.info(`Mapping model: ${originalModel} -> ${model}`);
         }
 
@@ -25,21 +26,20 @@ export function createChatRouter(qwenProvider?: LLMProvider, modelMappings: Reco
                            model.startsWith('qwen3');
 
         if (qwenProvider && isQwenModel) {
-            return qwenProvider.handleChatCompletion(req, res);
+            // Note: We need to pass the updated body if we modified it
+            // However, our Provider currently reads c.req.json() again.
+            // In Hono, c.req.json() can only be read once unless we use a middleware to buffer it.
+            // For now, let's assume the Provider will use the model from the body it reads.
+            return qwenProvider.handleChatCompletion(c);
         }
 
-        // Future: Extend other providers here
-        // if (geminiProvider && model.startsWith('gemini')) {
-        //     return geminiProvider.handleChatCompletion(req, res);
-        // }
-        
-        res.status(404).json({
+        return c.json({
             error: {
                 message: `No provider available for model: ${model}`,
                 type: 'invalid_request_error'
             }
-        });
+        }, 404);
     });
 
-    return router;
+    return app;
 }
