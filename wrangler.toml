@@ -5,10 +5,12 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "AUTH_STORE"
-# 注意：手动部署时请在 Cloudflare 控制台 Settings -> Bindings 中手动关联 KV 空间
-# 不要在这里写死的 ID，除非你是在本地进行命令行部署
+# 必须保留 id 字段以通过 wrangler 校验。
+# 线上会自动使用你在 Cloudflare 控制台 Settings -> Bindings 中手动关联的真实 ID。
+id = "7814bb17e11b5475e109cecb71b1a1f7" 
 
 [vars]
-# 这里的变量建议全部在 Cloudflare Dashboard 的 Settings -> Variables 中配置
-# 以便享受加密存储和无需修改代码的便利。
 LOG_LEVEL = "INFO"
+# 默认配额
+CHAT_DAILY_LIMIT = "2000"
+CHAT_RPM_LIMIT = "60"
