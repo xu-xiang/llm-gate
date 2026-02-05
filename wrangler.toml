@@ -9,7 +9,8 @@ id = "PLACEHOLDER_FOR_KV_ID"
 
 [vars]
 # [必填] 访问密码，同时决定了管理后台路径: /<API_KEY>/ui
-# API_KEY = "你的超级密码"
+# 这里留空是为了让 Cloudflare 部署页面自动显示输入框
+API_KEY = ""
 
 # [可选] 日志级别: DEBUG, INFO, WARN, ERROR
 LOG_LEVEL = "INFO"
