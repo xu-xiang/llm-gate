@@ -1,4 +1,4 @@
-# LLM CLI Gateway (Cloudflare Edition)
+# LLM Gateway (llm-gate)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/xu-xiang/llm-gate)
 
