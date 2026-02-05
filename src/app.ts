@@ -40,19 +40,14 @@ export async function createApp(config: AppConfig, storage: IStorage) {
     app.route('/', createDashboardRouter());
     app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }));
 
-    // 2. 管理路由 (显式挂载，确保 100% 路径匹配)
+    // 2. 管理路由 (显式挂载)
     const key = (config.api_key || 'admin').trim();
+    logger.info(`Admin UI mounting at /${key}/ui`);
+
     if (qwenProvider) {
         const adminApp = createAdminRouter(storage, qwenProvider, config.qwen_oauth_client_id);
-        
-        // 使用 Hono 的 .route() 但确保路径前缀正确
-        // 或者是为了最大程度兼容性，直接映射
         app.route(`/${key}`, adminApp);
-        
-        // 增加一个重定向，防止用户没打最后的 /ui
         app.get(`/${key}`, (c) => c.redirect(`/${key}/ui`));
-        
-        logger.info(`Admin UI ready at /${key}/ui`);
     }
 
     // 3. API 权限验证
