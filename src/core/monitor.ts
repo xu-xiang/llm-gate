@@ -29,7 +29,6 @@ class Monitor {
         this.db = db;
         if (!db) return;
 
-        // 1. Get or Set global start time
         try {
             const res = await db.prepare("SELECT value FROM global_monitor WHERE key = 'uptime_start'").first();
             if (res) {
@@ -40,7 +39,6 @@ class Monitor {
                 this.globalStats.uptimeStart = now;
             }
             
-            // 2. Load total counts
             const totals = await db.prepare("SELECT key, value FROM global_monitor WHERE key LIKE '%_total'").all();
             if (totals.results) {
                 for (const row of totals.results as any[]) {
@@ -53,42 +51,46 @@ class Monitor {
         }
     }
 
-    public recordRequest(status: 'success' | 'error' | 'ratelimit', kind: 'chat' | 'search' = 'chat') {
-        // Update local buffer
+    // 修复：返回 Promise，确保 waitUntil 能等待它完成
+    public async recordRequest(status: 'success' | 'error' | 'ratelimit', kind: 'chat' | 'search' = 'chat'): Promise<void> {
+        // 1. Update memory state immediately for fast read
         this.buffer[kind][status]++;
-        
-        // Update local cache for immediate display
         if (kind === 'chat') this.globalStats.chatTotal++;
         else this.globalStats.searchTotal++;
 
-        // Async flush to DB (fire and forget)
+        // 2. Persist to DB
         if (this.db) {
-            this.flushToDB(); // In reality, we should debounce this
+            await this.flushToDB();
         }
     }
 
     private async flushToDB() {
         if (!this.db) return;
-        // Simple immediate flush for now, can be optimized with batching if high load
-        // But D1 batch is efficient enough for moderate load
-        // We accumulate in buffer and flush every few requests or seconds
-        // For simplicity in this demo, let's just assume this is called inside waitUntil context
         
         const b = this.buffer;
-        // Reset buffer
-        this.buffer = { chat: { success: 0, error: 0, ratelimit: 0 }, search: { success: 0, error: 0, ratelimit: 0 } };
+        // Snapshot current buffer
+        const chatSuccess = b.chat.success;
+        const chatError = b.chat.error;
+        const searchSuccess = b.search.success;
+
+        // Reset memory buffer immediately
+        b.chat.success = 0; b.chat.error = 0; b.chat.ratelimit = 0;
+        b.search.success = 0; b.search.error = 0; b.search.ratelimit = 0;
 
         const batch = [];
-        // Chat updates
-        if (b.chat.success) batch.push(this.updateStat('chat_total', b.chat.success));
-        if (b.chat.success) batch.push(this.updateStat('chat_success', b.chat.success));
-        if (b.chat.error) batch.push(this.updateStat('chat_error', b.chat.error));
-        
-        // Search updates
-        if (b.search.success) batch.push(this.updateStat('search_total', b.search.success));
+        if (chatSuccess) {
+            batch.push(this.updateStat('chat_total', chatSuccess));
+            batch.push(this.updateStat('chat_success', chatSuccess));
+        }
+        if (chatError) batch.push(this.updateStat('chat_error', chatError));
+        if (searchSuccess) batch.push(this.updateStat('search_total', searchSuccess));
         
         if (batch.length > 0) {
-            this.db.batch(batch).catch(e => console.error('Monitor flush failed', e));
+            try {
+                await this.db.batch(batch);
+            } catch (e) {
+                console.error('Monitor flush failed', e);
+            }
         }
     }
 
@@ -107,7 +109,7 @@ class Monitor {
             uptime,
             chat: {
                 total: this.globalStats.chatTotal,
-                success: 0, // Simplified for read (would need separate query)
+                success: 0, 
                 error: 0,
                 rateLimited: 0
             },

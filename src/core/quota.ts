@@ -14,34 +14,24 @@ class QuotaManager {
     private storage?: IStorage;
     private db?: D1Database;
     
-    // In-memory buffer for high-performance counting
-    // Key: `${date}:${providerId}:${kind}` -> Value: count
+    // In-memory buffer
     private pendingWrites: Map<string, number> = new Map();
-    private lastFlushTime = Date.now();
-    private flushInterval = 30000; // 30s flush
     
-    // Snapshot for fast read
     private usageCache: DailyUsage = {};
-    
     private chatDailyLimit = 2000;
     private chatRpmLimit = 60;
     private searchDailyLimit = 0;
     private searchRpmLimit = 0;
-    
-    // RPM is always in-memory (per instance is acceptable)
     private rpmData: Record<string, any> = {};
 
     public async init(storage: IStorage, db?: D1Database) {
         this.storage = storage;
         this.db = db;
         
-        // 1. Try load snapshot from KV first (Fastest)
         const cached = await this.storage.get('quota_snapshot');
         if (cached) {
             this.usageCache = cached;
         } else if (this.db) {
-            // 2. If no cache, load from DB (Source of Truth)
-            // This is heavy, only done on cold start
             await this.loadFromDB();
         }
     }
@@ -61,7 +51,6 @@ class QuotaManager {
                     // @ts-ignore
                     this.usageCache[date][row.provider_id][row.kind] = row.count;
                 }
-                // Update KV cache for other instances
                 await this.storage?.set('quota_snapshot', this.usageCache, { expirationTtl: 3600 });
             }
         } catch (e) {
@@ -82,7 +71,6 @@ class QuotaManager {
             this.usageCache[date][providerId] = { chat: 0, search: 0 };
         }
         const entry = this.usageCache[date][providerId];
-        // Normalize older number format
         if (typeof entry === 'number') {
             this.usageCache[date][providerId] = { chat: entry, search: 0 };
             return this.usageCache[date][providerId] as UsageByType;
@@ -90,15 +78,14 @@ class QuotaManager {
         return entry as UsageByType;
     }
 
-    // This method MUST be non-blocking
-    public async incrementUsage(providerId: string, kind: 'chat' | 'search' = 'chat') {
+    public async incrementUsage(providerId: string, kind: 'chat' | 'search' = 'chat'): Promise<void> {
         const date = this.getBeijingDate();
         
-        // 1. Update In-Memory Cache immediately (for fast rejection next time)
+        // 1. Update Memory
         const usage = this.ensureUsageEntry(date, providerId);
         usage[kind]++;
 
-        // 2. Update RPM (In-memory only)
+        // 2. Update RPM
         const currentMinute = Math.floor(Date.now() / 60000);
         if (!this.rpmData[providerId]) this.rpmData[providerId] = {};
         const bucket = this.rpmData[providerId][kind];
@@ -107,13 +94,13 @@ class QuotaManager {
         }
         this.rpmData[providerId][kind].count++;
 
-        // 3. Buffer the write for DB (Resource Saving)
+        // 3. Buffer for DB
         const bufferKey = `${date}|${providerId}|${kind}`;
         const currentBuffer = this.pendingWrites.get(bufferKey) || 0;
         this.pendingWrites.set(bufferKey, currentBuffer + 1);
 
-        // 4. Flush if needed
-        if (Date.now() - this.lastFlushTime > this.flushInterval || this.pendingWrites.size > 10) {
+        // 4. Flush immediately (async) to avoid data loss in serverless
+        if (this.db) {
             await this.flushToDB();
         }
     }
@@ -123,14 +110,10 @@ class QuotaManager {
 
         const batch = [];
         const entries = Array.from(this.pendingWrites.entries());
-        this.pendingWrites.clear();
-        this.lastFlushTime = Date.now();
-
-        logger.info(`Flushing ${entries.length} quota records to D1...`);
+        this.pendingWrites.clear(); // Clear immediately to prevent double write
 
         for (const [key, count] of entries) {
             const [date, providerId, kind] = key.split('|');
-            // Upsert Logic: Insert or Add to existing
             batch.push(this.db.prepare(`
                 INSERT INTO usage_stats (date, provider_id, kind, count) 
                 VALUES (?1, ?2, ?3, ?4) 
@@ -141,12 +124,14 @@ class QuotaManager {
 
         try {
             await this.db.batch(batch);
-            // Sync snapshot to KV for global consistency (eventual)
+            // Sync snapshot to KV eventually
             await this.storage?.set('quota_snapshot', this.usageCache, { expirationTtl: 3600 });
         } catch (e) {
             logger.error('Failed to flush quota to D1', e);
-            // Restore buffer on failure (simple retry logic)
-            // for (const [key, count] of entries) this.pendingWrites.set(key, (this.pendingWrites.get(key)||0) + count);
+            // Restore buffer on failure
+            for (const [key, count] of entries) {
+                this.pendingWrites.set(key, (this.pendingWrites.get(key) || 0) + count);
+            }
         }
     }
 
