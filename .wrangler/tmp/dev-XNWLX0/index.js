@@ -2982,21 +2982,18 @@ var MultiQwenProvider = class {
   }
   async scanAndLoadProviders() {
     const dynamicKeys = await this.storage.list("qwen_creds_");
-    const candidateKeys = Array.from(/* @__PURE__ */ new Set([...this.staticAuthFiles, ...dynamicKeys]));
-    const validKeys = [];
-    for (const key of candidateKeys) {
+    const validStaticKeys = [];
+    for (const key of this.staticAuthFiles) {
       const exists = await this.storage.get(key);
-      if (exists) {
-        validKeys.push(key);
-      } else {
-        logger2.debug(`Skipping provider key ${key} as it does not exist in storage.`);
-      }
+      if (exists)
+        validStaticKeys.push(key);
     }
-    logger2.info(`Loading ${validKeys.length} active providers...`);
+    const allActiveKeys = Array.from(/* @__PURE__ */ new Set([...validStaticKeys, ...dynamicKeys]));
+    logger2.info(`Refreshing provider pool. Active: ${allActiveKeys.length}`);
     const currentMap = new Map(this.providers.map((p) => [p.getStatus().id, p]));
     const newProviders = [];
     const initPromises = [];
-    for (const key of validKeys) {
+    for (const key of allActiveKeys) {
       if (currentMap.has(key)) {
         newProviders.push(currentMap.get(key));
       } else {
@@ -24180,7 +24177,8 @@ var ConfigSchema = external_exports.object({
   providers: external_exports.object({
     qwen: external_exports.object({
       enabled: external_exports.boolean().default(true),
-      auth_files: external_exports.array(external_exports.string()).default(["oauth_creds.json"]),
+      auth_files: external_exports.array(external_exports.string()).default([]),
+      // 改为空数组
       rate_limit: external_exports.object({
         requests_per_minute: external_exports.number().default(60)
       }).optional()

@@ -23,31 +23,25 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     private async scanAndLoadProviders() {
-        // 1. Get dynamic keys from storage (those starting with qwen_creds_)
+        // 1. 获取动态 Key
         const dynamicKeys = await this.storage.list('qwen_creds_');
         
-        // 2. Candidate keys = Static config + Dynamic keys
-        const candidateKeys = Array.from(new Set([...this.staticAuthFiles, ...dynamicKeys]));
-        
-        // 3. VALIDATION: Only keep keys that REALLY exist in storage
-        // This is the fix: if you deleted it from UI (KV), it stays deleted even if in YAML.
-        const validKeys: string[] = [];
-        for (const key of candidateKeys) {
+        // 2. 验证静态 Key
+        const validStaticKeys: string[] = [];
+        for (const key of this.staticAuthFiles) {
             const exists = await this.storage.get(key);
-            if (exists) {
-                validKeys.push(key);
-            } else {
-                logger.debug(`Skipping provider key ${key} as it does not exist in storage.`);
-            }
+            if (exists) validStaticKeys.push(key);
         }
-
-        logger.info(`Loading ${validKeys.length} active providers...`);
+        
+        // 合并
+        const allActiveKeys = Array.from(new Set([...validStaticKeys, ...dynamicKeys]));
+        logger.info(`Refreshing provider pool. Active: ${allActiveKeys.length}`);
 
         const currentMap = new Map(this.providers.map(p => [p.getStatus().id, p]));
         const newProviders: QwenProvider[] = [];
         const initPromises: Promise<void>[] = [];
 
-        for (const key of validKeys) {
+        for (const key of allActiveKeys) {
             if (currentMap.has(key)) {
                 newProviders.push(currentMap.get(key)!);
             } else {

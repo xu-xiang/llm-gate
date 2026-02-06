@@ -24,7 +24,7 @@ const ConfigSchema = z.object({
     providers: z.object({
         qwen: z.object({
             enabled: z.boolean().default(true),
-            auth_files: z.array(z.string()).default(['oauth_creds.json']),
+            auth_files: z.array(z.string()).default([]), // 改为空数组
             rate_limit: z.object({
                 requests_per_minute: z.number().default(60)
             }).optional()
