@@ -7,7 +7,7 @@ import { MultiQwenProvider } from './providers/qwen/multiProvider';
 import { createChatRouter } from './routes/chat';
 import { createDashboardRouter } from './routes/dashboard';
 import { createToolsRouter } from './routes/tools';
-import { setupAdminRoutes } from './routes/admin';
+import { createAdminRouter } from './routes/admin';
 import { quotaManager } from './core/quota';
 import { IStorage } from './core/storage';
 
@@ -20,11 +20,16 @@ export async function createApp(config: AppConfig, storage: IStorage) {
     app.use('*', honoLogger());
     app.use('*', cors());
 
+    // 默认开启 Qwen Provider，支持零配置启动
+    const qwenEnabled = config.providers.qwen?.enabled ?? true;
+    const authFiles = config.providers.qwen?.auth_files ?? [];
+    
     let qwenProvider: MultiQwenProvider | undefined;
-    if (config.providers.qwen?.enabled) {
+    if (qwenEnabled) {
+        logger.info("Initializing Qwen Provider pool...");
         qwenProvider = new MultiQwenProvider(
             storage, 
-            config.providers.qwen.auth_files,
+            authFiles,
             config.qwen_oauth_client_id
         );
         await qwenProvider.initialize();
@@ -36,23 +41,21 @@ export async function createApp(config: AppConfig, storage: IStorage) {
         search: { daily: config.quota?.search?.daily, rpm: config.quota?.search?.rpm }
     });
 
-    // 1. 公共路由
+    // 1. 公共路由 (根路径健康检查)
     app.route('/', createDashboardRouter());
     app.get('/health', (c) => c.json({ status: 'ok', version: '1.0.0' }));
 
-    // 2. 管理路由 (扁平化挂载，解决 404)
-    const key = (config.api_key || 'admin').trim();
-    if (qwenProvider) {
-        // 直接在当前 app 上注册所有管理路由，前缀为 /key
-        setupAdminRoutes(app, `/${key}`, storage, qwenProvider, config.qwen_oauth_client_id);
-        
-        // 自动重定向
-        app.get(`/${key}`, (c) => c.redirect(`/${key}/ui`));
-        
-        logger.info(`Admin UI flattened at /${key}/ui`);
-    }
+    // 2. 管理路由 (固定路径 /admin)
+    // 注意：我们将 adminApp 挂载到 /admin，其内部路由如 /ui 会自动变成 /admin/ui
+    const adminApp = createAdminRouter(storage, qwenProvider!, config.qwen_oauth_client_id, config.api_key);
+    app.route('/admin', adminApp);
+    
+    // 快捷重定向：访问 /ui 自动跳转到 /admin/ui
+    app.get('/ui', (c) => c.redirect('/admin/ui'));
+    
+    logger.info(`Admin Console registered at /admin/ui (Shortcut: /ui)`);
 
-    // 3. API 权限验证
+    // 3. 业务 API 鉴权 (针对 /v1 路径)
     if (config.api_key) {
         app.use('/v1/*', async (c, next) => {
             const authHeader = c.req.header('Authorization');
@@ -62,12 +65,13 @@ export async function createApp(config: AppConfig, storage: IStorage) {
         });
     }
 
+    // 4. 业务路由挂载
     app.route('/v1/chat', createChatRouter(qwenProvider, config.model_mappings));
     app.route('/v1/tools', createToolsRouter(qwenProvider));
 
     app.onError((err, c) => {
-        logger.error('App Error', err);
-        return c.json({ error: 'Internal Server Error' }, 500);
+        logger.error('App Fatal Error', err);
+        return c.json({ error: 'Internal Server Error', message: err.message }, 500);
     });
 
     return app;
