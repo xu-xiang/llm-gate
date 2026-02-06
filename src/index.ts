@@ -1,10 +1,14 @@
-import { KVNamespace } from '@cloudflare/workers-types';
+import { KVNamespace, D1Database } from '@cloudflare/workers-types';
 import { createApp } from './app';
 import { loadConfig } from './config';
 import { KVStorage } from './core/storage';
+import { quotaManager } from './core/quota';
+import { monitor } from './core/monitor';
 
 export interface Env {
   AUTH_STORE: KVNamespace;
+  DB: D1Database;
+  
   API_KEY?: string;
   LOG_LEVEL?: string;
   CONFIG_YAML?: string;
@@ -38,16 +42,22 @@ export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     try {
       if (!appInstance) {
-        // --- 关键启动日志 ---
         console.log('--- LLM GATEWAY STARTING ---');
-        console.log(`[BOOT] API_KEY configured: ${env.API_KEY ? 'YES (Length: ' + env.API_KEY.trim().length + ')' : 'NO'}`);
+        console.log(`[BOOT] API_KEY configured: ${env.API_KEY ? 'YES' : 'NO'}`);
         
         const storage = new KVStorage(env.AUTH_STORE);
         await seedCredentialsIfNeeded(env, storage);
 
+        // Init Quota & Monitor with D1
+        if (env.DB) {
+            await quotaManager.init(storage, env.DB);
+            await monitor.init(env.DB);
+        } else {
+            console.warn('[BOOT] D1 Database not bound! Quota and stats will be ephemeral.');
+            await quotaManager.init(storage); // Fallback to KV-only
+        }
+
         const config = loadConfig(env);
-        
-        // 显式打印管理路径，方便排查 404
         const adminKey = (config.api_key || 'admin').trim();
         console.log(`[BOOT] Admin Console Path: /${adminKey}/ui`);
         
@@ -56,17 +66,8 @@ export default {
       }
       return appInstance.fetch(request, env, ctx);
     } catch (e: any) {
-      // 这里的错误会输出到 Cloudflare 实时日志 (Real-time Logs)
-      console.error('[FATAL ERROR] App failed to start:', e.stack || e.message || e);
-      
-      return new Response(JSON.stringify({
-        error: "App Initialization Failed",
-        message: e.message,
-        path_hint: env.API_KEY ? `/${env.API_KEY.trim()}/ui` : "/admin/ui"
-      }), { 
-        status: 500, 
-        headers: { "Content-Type": "application/json" } 
-      });
+      console.error('[FATAL ERROR]', e);
+      return new Response(`Startup Failed: ${e.message}`, { status: 500 });
     }
   },
 };

@@ -1,3 +1,4 @@
+import { D1Database } from '@cloudflare/workers-types';
 import { IStorage } from './storage';
 import { logger } from './logger';
 
@@ -11,181 +12,189 @@ export interface DailyUsage {
 
 class QuotaManager {
     private storage?: IStorage;
-    private usageData: DailyUsage = {};
+    private db?: D1Database;
+    
+    // In-memory buffer for high-performance counting
+    // Key: `${date}:${providerId}:${kind}` -> Value: count
+    private pendingWrites: Map<string, number> = new Map();
+    private lastFlushTime = Date.now();
+    private flushInterval = 30000; // 30s flush
+    
+    // Snapshot for fast read
+    private usageCache: DailyUsage = {};
+    
     private chatDailyLimit = 2000;
     private chatRpmLimit = 60;
     private searchDailyLimit = 0;
     private searchRpmLimit = 0;
-    private rpmData: {
-        [providerId: string]: {
-            chat?: { count: number; minute: number };
-            search?: { count: number; minute: number };
-        };
-    } = {};
     
-    // 初始化方法，必须在应用启动时调用
-    public async init(storage: IStorage) {
+    // RPM is always in-memory (per instance is acceptable)
+    private rpmData: Record<string, any> = {};
+
+    public async init(storage: IStorage, db?: D1Database) {
         this.storage = storage;
-        await this.load();
+        this.db = db;
+        
+        // 1. Try load snapshot from KV first (Fastest)
+        const cached = await this.storage.get('quota_snapshot');
+        if (cached) {
+            this.usageCache = cached;
+        } else if (this.db) {
+            // 2. If no cache, load from DB (Source of Truth)
+            // This is heavy, only done on cold start
+            await this.loadFromDB();
+        }
     }
-    
+
+    private async loadFromDB() {
+        if (!this.db) return;
+        const date = this.getBeijingDate();
+        try {
+            const results = await this.db.prepare(
+                'SELECT provider_id, kind, count FROM usage_stats WHERE date = ?'
+            ).bind(date).all();
+            
+            if (results.results) {
+                this.usageCache[date] = {};
+                for (const row of results.results as any[]) {
+                    this.ensureUsageEntry(date, row.provider_id);
+                    // @ts-ignore
+                    this.usageCache[date][row.provider_id][row.kind] = row.count;
+                }
+                // Update KV cache for other instances
+                await this.storage?.set('quota_snapshot', this.usageCache, { expirationTtl: 3600 });
+            }
+        } catch (e) {
+            logger.error('Failed to load quota from DB', e);
+        }
+    }
+
     private getBeijingDate(): string {
-        // 获取北京时间 (UTC+8) 的日期字符串 YYYY-MM-DD
         const now = new Date();
         const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
         const beijingTime = new Date(utc + (3600000 * 8));
         return beijingTime.toISOString().split('T')[0];
     }
 
-    private async load() {
-        if (!this.storage) return;
-        try {
-            const data = await this.storage.get('usage_stats');
-            if (data) {
-                this.usageData = data;
-            }
-        } catch (e) {
-            logger.error('Failed to load usage stats from storage', e);
-        }
-    }
-
-    private async save() {
-        if (!this.storage) return;
-        try {
-            // 注意：在高并发下，这会导致 Race Condition，KV 的最终一致性可能会覆盖数据。
-            // 真正的商业级方案应使用 Durable Objects 或 Atomic Counters。
-            // 但对于 CLI Gateway 场景，KV 勉强可用。
-            await this.storage.set('usage_stats', this.usageData);
-        }
-        catch (e) {
-            logger.error('Failed to save usage stats to storage', e);
-        }
-    }
-
-    public setLimits(limits: {
-        chat?: { daily?: number; rpm?: number };
-        search?: { daily?: number; rpm?: number };
-    }) {
-        if (typeof limits.chat?.daily === 'number') this.chatDailyLimit = limits.chat.daily;
-        if (typeof limits.chat?.rpm === 'number') this.chatRpmLimit = limits.chat.rpm;
-        if (typeof limits.search?.daily === 'number') this.searchDailyLimit = limits.search.daily;
-        if (typeof limits.search?.rpm === 'number') this.searchRpmLimit = limits.search.rpm;
-    }
-
     private ensureUsageEntry(date: string, providerId: string): UsageByType {
-        if (!this.usageData[date]) {
-            this.usageData[date] = {};
+        if (!this.usageCache[date]) this.usageCache[date] = {};
+        if (!this.usageCache[date][providerId]) {
+            this.usageCache[date][providerId] = { chat: 0, search: 0 };
         }
-        const existing = this.usageData[date][providerId];
-        if (typeof existing === 'number') {
-            const converted = { chat: existing, search: 0 };
-            this.usageData[date][providerId] = converted;
-            return converted;
+        const entry = this.usageCache[date][providerId];
+        // Normalize older number format
+        if (typeof entry === 'number') {
+            this.usageCache[date][providerId] = { chat: entry, search: 0 };
+            return this.usageCache[date][providerId] as UsageByType;
         }
-        if (!existing) {
-            const created = { chat: 0, search: 0 };
-            this.usageData[date][providerId] = created;
-            return created;
-        }
-        return existing as UsageByType;
+        return entry as UsageByType;
     }
 
+    // This method MUST be non-blocking
     public async incrementUsage(providerId: string, kind: 'chat' | 'search' = 'chat') {
         const date = this.getBeijingDate();
-        const now = new Date();
-        const currentMinute = Math.floor(now.getTime() / 60000);
-
-        // Daily Usage
+        
+        // 1. Update In-Memory Cache immediately (for fast rejection next time)
         const usage = this.ensureUsageEntry(date, providerId);
         usage[kind]++;
 
-        // RPM Usage (In-memory is fine for per-instance limiting)
-        if (!this.rpmData[providerId]) {
-            this.rpmData[providerId] = {};
-        }
+        // 2. Update RPM (In-memory only)
+        const currentMinute = Math.floor(Date.now() / 60000);
+        if (!this.rpmData[providerId]) this.rpmData[providerId] = {};
         const bucket = this.rpmData[providerId][kind];
         if (!bucket || bucket.minute !== currentMinute) {
             this.rpmData[providerId][kind] = { count: 0, minute: currentMinute };
         }
-        this.rpmData[providerId][kind]!.count++;
+        this.rpmData[providerId][kind].count++;
 
-        await this.save();
+        // 3. Buffer the write for DB (Resource Saving)
+        const bufferKey = `${date}|${providerId}|${kind}`;
+        const currentBuffer = this.pendingWrites.get(bufferKey) || 0;
+        this.pendingWrites.set(bufferKey, currentBuffer + 1);
+
+        // 4. Flush if needed
+        if (Date.now() - this.lastFlushTime > this.flushInterval || this.pendingWrites.size > 10) {
+            await this.flushToDB();
+        }
+    }
+
+    private async flushToDB() {
+        if (!this.db || this.pendingWrites.size === 0) return;
+
+        const batch = [];
+        const entries = Array.from(this.pendingWrites.entries());
+        this.pendingWrites.clear();
+        this.lastFlushTime = Date.now();
+
+        logger.info(`Flushing ${entries.length} quota records to D1...`);
+
+        for (const [key, count] of entries) {
+            const [date, providerId, kind] = key.split('|');
+            // Upsert Logic: Insert or Add to existing
+            batch.push(this.db.prepare(`
+                INSERT INTO usage_stats (date, provider_id, kind, count) 
+                VALUES (?1, ?2, ?3, ?4) 
+                ON CONFLICT(date, provider_id, kind) 
+                DO UPDATE SET count = count + ?4
+            `).bind(date, providerId, kind, count));
+        }
+
+        try {
+            await this.db.batch(batch);
+            // Sync snapshot to KV for global consistency (eventual)
+            await this.storage?.set('quota_snapshot', this.usageCache, { expirationTtl: 3600 });
+        } catch (e) {
+            logger.error('Failed to flush quota to D1', e);
+            // Restore buffer on failure (simple retry logic)
+            // for (const [key, count] of entries) this.pendingWrites.set(key, (this.pendingWrites.get(key)||0) + count);
+        }
     }
 
     public checkQuota(providerId: string, kind: 'chat' | 'search' = 'chat'): boolean {
         const date = this.getBeijingDate();
-        const now = new Date();
-        const currentMinute = Math.floor(now.getTime() / 60000);
-
-        // Check Daily Limit
-        const usageEntry = this.usageData[date]?.[providerId];
-        const dailyUsed = typeof usageEntry === 'number' 
-            ? (kind === 'chat' ? usageEntry : 0) 
-            : (usageEntry?.[kind] || 0);
-            
+        const usage = this.ensureUsageEntry(date, providerId);
+        const dailyUsed = usage[kind];
+        
         const dailyLimit = kind === 'chat' ? this.chatDailyLimit : this.searchDailyLimit;
-        if (dailyLimit > 0 && dailyUsed >= dailyLimit) {
-            return false;
-        }
+        if (dailyLimit > 0 && dailyUsed >= dailyLimit) return false;
 
-        // Check RPM Limit
+        const currentMinute = Math.floor(Date.now() / 60000);
         const rpmEntry = this.rpmData[providerId]?.[kind];
         if (rpmEntry && rpmEntry.minute === currentMinute) {
             const rpmLimit = kind === 'chat' ? this.chatRpmLimit : this.searchRpmLimit;
-            if (rpmLimit > 0 && rpmEntry.count >= rpmLimit) {
-                return false;
-            }
+            if (rpmLimit > 0 && rpmEntry.count >= rpmLimit) return false;
         }
 
         return true;
     }
 
+    public setLimits(limits: any) {
+        if (limits.chat?.daily) this.chatDailyLimit = limits.chat.daily;
+        if (limits.chat?.rpm) this.chatRpmLimit = limits.chat.rpm;
+        if (limits.search?.daily) this.searchDailyLimit = limits.search.daily;
+        if (limits.search?.rpm) this.searchRpmLimit = limits.search.rpm;
+    }
+
     public getUsage(providerId: string) {
         const date = this.getBeijingDate();
-        const now = new Date();
-        const currentMinute = Math.floor(now.getTime() / 60000);
-
         const usage = this.ensureUsageEntry(date, providerId);
         
+        const currentMinute = Math.floor(Date.now() / 60000);
         const rpmEntry = this.rpmData[providerId];
-        const chatRpmCount =
-            rpmEntry?.chat && rpmEntry.chat.minute === currentMinute ? rpmEntry.chat.count : 0;
-        const searchRpmCount =
-            rpmEntry?.search && rpmEntry.search.minute === currentMinute ? rpmEntry.search.count : 0;
+        const chatRpmCount = rpmEntry?.chat?.minute === currentMinute ? rpmEntry.chat.count : 0;
+        const searchRpmCount = rpmEntry?.search?.minute === currentMinute ? rpmEntry.search.count : 0;
 
-        const chatDailyPercent =
-            this.chatDailyLimit > 0 ? Math.min(100, (usage.chat / this.chatDailyLimit) * 100) : 0;
-        const chatRpmPercent =
-            this.chatRpmLimit > 0 ? Math.min(100, (chatRpmCount / this.chatRpmLimit) * 100) : 0;
-        const searchDailyPercent =
-            this.searchDailyLimit > 0 ? Math.min(100, (usage.search / this.searchDailyLimit) * 100) : 0;
-        const searchRpmPercent =
-            this.searchRpmLimit > 0 ? Math.min(100, (searchRpmCount / this.searchRpmLimit) * 100) : 0;
-
+        const chatDailyPercent = this.chatDailyLimit > 0 ? Math.min(100, (usage.chat / this.chatDailyLimit) * 100) : 0;
+        const chatRpmPercent = this.chatRpmLimit > 0 ? Math.min(100, (chatRpmCount / this.chatRpmLimit) * 100) : 0;
+        
         return {
             chat: {
-                daily: {
-                    used: usage.chat,
-                    limit: this.chatDailyLimit,
-                    percent: chatDailyPercent
-                },
-                rpm: {
-                    used: chatRpmCount,
-                    limit: this.chatRpmLimit,
-                    percent: chatRpmPercent
-                }
+                daily: { used: usage.chat, limit: this.chatDailyLimit, percent: chatDailyPercent },
+                rpm: { used: chatRpmCount, limit: this.chatRpmLimit, percent: chatRpmPercent }
             },
             search: {
-                daily: {
-                    used: usage.search,
-                    limit: this.searchDailyLimit,
-                    percent: searchDailyPercent
-                },
-                rpm: {
-                    used: searchRpmCount,
-                    limit: this.searchRpmLimit,
-                    percent: searchRpmPercent
-                }
+                daily: { used: usage.search, limit: this.searchDailyLimit, percent: 0 },
+                rpm: { used: searchRpmCount, limit: this.searchRpmLimit, percent: 0 }
             }
         };
     }
