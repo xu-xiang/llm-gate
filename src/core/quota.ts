@@ -73,9 +73,19 @@ class QuotaManager {
 
         if (this.db) {
             try {
-                const res = await this.db.prepare("SELECT count FROM usage_stats WHERE date = ? AND provider_id = ? AND kind = 'chat'").bind(date, providerId).first();
+                // Try exact match first
+                let res = await this.db.prepare("SELECT count FROM usage_stats WHERE date = ? AND provider_id = ? AND kind = 'chat'").bind(date, providerId).first();
+                
+                // Fallback: Try removing or adding './' prefix to handle ID inconsistencies
+                if (!res) {
+                    const altId = providerId.startsWith('./') ? providerId.substring(2) : `./${providerId}`;
+                    res = await this.db.prepare("SELECT count FROM usage_stats WHERE date = ? AND provider_id = ? AND kind = 'chat'").bind(date, altId).first();
+                }
+
                 if (res) dailyUsed = res.count as number;
-            } catch (e) {}
+            } catch (e) {
+                logger.error('[Quota] D1 Read Error', e);
+            }
         }
         
         const currentMinute = Math.floor(Date.now() / 60000);
