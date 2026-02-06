@@ -38,6 +38,36 @@ async function seedCredentialsIfNeeded(env: Env, storage: KVStorage) {
     }
 }
 
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS usage_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    count INTEGER DEFAULT 0,
+    UNIQUE(date, provider_id, kind)
+);
+CREATE TABLE IF NOT EXISTS global_monitor (
+    key TEXT PRIMARY KEY,
+    value INTEGER DEFAULT 0
+);
+INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch());
+`;
+
+async function migrateDatabase(db: D1Database) {
+    try {
+        // Check if table exists
+        const check = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='global_monitor'").first();
+        if (!check) {
+            console.log('[INIT] D1 Database is empty. Running auto-migration...');
+            await db.exec(SCHEMA_SQL);
+            console.log('[INIT] D1 Migration completed.');
+        }
+    } catch (e) {
+        console.error('[INIT] D1 Migration failed:', e);
+    }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     try {
@@ -50,6 +80,9 @@ export default {
 
         // Init Quota & Monitor with D1
         if (env.DB) {
+            // --- Auto Migration ---
+            await migrateDatabase(env.DB);
+            
             await quotaManager.init(storage, env.DB);
             await monitor.init(env.DB);
         } else {
