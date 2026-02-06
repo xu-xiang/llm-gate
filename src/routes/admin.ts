@@ -124,8 +124,16 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         return c.html(html);
     });
 
-    // API 接口保持不变
-    app.get('/api/stats', (c) => c.json({ monitor: monitor.getStats(), qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: qwenProvider.getAllProviderStatus() } }));
+    // 3. API 接口 (已更新为异步)
+    app.get('/api/stats', async (c) => {
+        const stats = await monitor.getStats();
+        const providers = await qwenProvider.getAllProviderStatus();
+        return c.json({
+            monitor: stats,
+            qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: providers }
+        });
+    });
+
     app.post('/api/auth/start', async (c) => {
         const verifier = generateCodeVerifier();
         const challenge = generateCodeChallenge(verifier);
@@ -134,6 +142,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         await storage.set(`pending_${authData.device_code}`, { verifier }, { expirationTtl: 600 });
         return c.json(authData);
     });
+
     app.post('/api/auth/poll', async (c) => {
         const { device_code, target_id, alias } = await c.req.json();
         const pending = await storage.get(`pending_${device_code}`);
@@ -151,17 +160,27 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
             return c.json({ status: 'success', id: saveId });
         } catch (e: any) { return c.json({ status: 'error', message: e.message }); }
     });
+
     app.patch('/api/providers/alias', async (c) => {
         const id = c.req.query('id') || '';
+        if (!id) return c.json({ error: 'Missing id' }, 400);
         const { alias } = await c.req.json();
         const data = await storage.get(id);
-        if (data) { data.alias = alias; await storage.set(id, data); await qwenProvider.addProvider(id); }
+        if (data) {
+            data.alias = alias;
+            await storage.set(id, data);
+            await qwenProvider.addProvider(id);
+        }
         return c.json({ success: true });
     });
+
     app.delete('/api/providers', async (c) => {
         const id = c.req.query('id') || '';
-        await storage.delete(id); await qwenProvider.removeProvider(id);
+        if (!id) return c.json({ error: 'Missing id' }, 400);
+        await storage.delete(id);
+        await qwenProvider.removeProvider(id);
         return c.json({ success: true });
     });
+
     return app;
 }

@@ -76,8 +76,8 @@ export class MultiQwenProvider implements LLMProvider {
         this.providers = this.providers.filter(p => p.getStatus().id !== credsKey);
     }
 
-    public getAllProviderStatus(): ProviderStatus[] {
-        return this.providers.map(p => p.getStatus());
+    public async getAllProviderStatus(): Promise<ProviderStatus[]> {
+        return Promise.all(this.providers.map(p => p.getStatus()));
     }
 
     public getCurrentIndex(): number {

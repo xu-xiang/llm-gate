@@ -52,11 +52,11 @@ export class QwenProvider implements LLMProvider {
         await this.initialize();
     }
 
-    public getStatus(): ProviderStatus {
+    public async getStatus(): Promise<ProviderStatus> {
         return { 
             ...this.providerStatus,
             alias: this.authManager.getCachedAlias(),
-            quota: quotaManager.getUsage(this.providerStatus.id)
+            quota: await quotaManager.getUsage(this.providerStatus.id)
         };
     }
 
