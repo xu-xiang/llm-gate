@@ -23,18 +23,18 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     private async scanAndLoadProviders() {
-        // 1. 获取动态 Key
         const dynamicKeys = await this.storage.list('qwen_creds_');
         
-        // 2. 验证静态 Key
         const validStaticKeys: string[] = [];
         for (const key of this.staticAuthFiles) {
             const exists = await this.storage.get(key);
             if (exists) validStaticKeys.push(key);
         }
         
-        // 合并
-        const allActiveKeys = Array.from(new Set([...validStaticKeys, ...dynamicKeys]));
+        // Normalize keys: Remove ./ prefix to ensure consistency
+        const allActiveKeys = Array.from(new Set([...validStaticKeys, ...dynamicKeys]))
+            .map(k => k.startsWith('./') ? k.substring(2) : k);
+
         logger.info(`Refreshing provider pool. Active: ${allActiveKeys.length}`);
 
         const currentMap = new Map(this.providers.map(p => [p.getStatus().id, p]));
@@ -42,9 +42,11 @@ export class MultiQwenProvider implements LLMProvider {
         const initPromises: Promise<void>[] = [];
 
         for (const key of allActiveKeys) {
+            // Check if we have an existing instance with this ID
             if (currentMap.has(key)) {
                 newProviders.push(currentMap.get(key)!);
             } else {
+                // Pass clean key (no ./)
                 const p = new QwenProvider(this.storage, key, this.clientId);
                 initPromises.push(p.initialize());
                 newProviders.push(p);

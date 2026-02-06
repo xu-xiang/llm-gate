@@ -128,7 +128,6 @@ export class QwenAuthManager {
     }
 
     public async refreshToken(refreshToken: string): Promise<QwenCredentials> {
-        // 使用独立的锁名称，防止不同账号互相阻塞
         const lockName = `token_refresh:${this.credsKey}`;
         const lockToken = await this.storage.acquireLock(lockName, 60);
         
@@ -138,7 +137,6 @@ export class QwenAuthManager {
         }
 
         try {
-            // 双重检查：获取锁后再次读取，可能其它进程已经刷新好了
             const latest = await this.loadCredentials();
             if (latest && latest.access_token && latest.refresh_token !== refreshToken) {
                  return latest;
@@ -176,7 +174,8 @@ export class QwenAuthManager {
                 token_type: data.token_type,
                 resource_url: data.resource_url || this.memoryCredentials?.resource_url,
                 expiry_date: Date.now() + (data.expires_in * 1000),
-                scope: data.scope
+                scope: data.scope,
+                alias: this.memoryCredentials?.alias // Preserve alias during refresh
             };
 
             await this.saveCredentials(creds);
@@ -187,22 +186,22 @@ export class QwenAuthManager {
     }
 
     private async waitForTokenUpdate(oldRefreshToken: string): Promise<QwenCredentials> {
-        const maxRetries = 30; // 15s
+        const maxRetries = 30;
         for (let i = 0; i < maxRetries; i++) {
             await new Promise(r => setTimeout(r, 500));
             const creds = await this.loadCredentials();
             if (creds && creds.refresh_token !== oldRefreshToken) {
                 return creds;
             }
-            // 额外检查锁是否释放，如果锁没了但 token 没变，说明上次刷新失败了
             const lockExists = await this.storage.get(`lock:token_refresh:${this.credsKey}`);
             if (!lockExists && i > 2) break; 
         }
         throw new Error('Timeout or failure waiting for token update');
     }
 
+    // FIX: Fallback to file ID if alias is missing
     public getCachedAlias(): string | undefined {
-        return this.memoryCredentials?.alias;
+        return this.memoryCredentials?.alias || this.credsKey.replace('qwen_creds_', '').replace('.json', '');
     }
 
     public async checkTokenValidity(creds: QwenCredentials): Promise<boolean> {
@@ -213,7 +212,7 @@ export class QwenAuthManager {
             const url = `${normalizedUrl}/v1/chat/completions`;
 
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s 验证超时
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
 
             try {
                 const response = await fetch(url, {
@@ -234,7 +233,7 @@ export class QwenAuthManager {
                 clearTimeout(timeoutId);
             }
         } catch (e) {
-            return true; // 网络问题暂且认为有效，避免循环刷新
+            return true;
         }
     }
 
@@ -245,7 +244,6 @@ export class QwenAuthManager {
         const now = Date.now();
         const expiresAt = creds.expiry_date || 0;
         
-        // 提前 5 分钟刷新
         if (expiresAt && now >= expiresAt - 300000) {
             return await this.refreshToken(creds.refresh_token);
         }

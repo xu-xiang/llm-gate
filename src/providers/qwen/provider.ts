@@ -115,6 +115,10 @@ export class QwenProvider implements LLMProvider {
                     creds = await this.authManager.refreshToken(creds.refresh_token);
                 }
 
+                if (!creds || !creds.access_token) {
+                    throw new Error('Invalid Credentials: Access Token missing');
+                }
+
                 const baseUrl = creds.resource_url || DEFAULT_DASHSCOPE_BASE_URL;
                 const suffix = '/v1';
                 let normalizedUrl = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
