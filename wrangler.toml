@@ -12,7 +12,7 @@ id = "f02f525d1f1e4f129183858979a6fc22"
 [[d1_databases]]
 binding = "DB"
 database_name = "llm-gate-db"
-database_id = "PLACEHOLDER_FOR_D1_ID" # 部署时请在后台绑定，或手动替换
+database_id = "092a81ac-7bbc-4cc4-8d34-392c267b1401" 
 
 [vars]
 # [移除] API_KEY = "" 
