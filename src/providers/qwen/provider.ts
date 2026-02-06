@@ -3,7 +3,7 @@ import { LLMProvider } from '../base';
 import { QwenAuthManager } from './auth';
 import { DEFAULT_DASHSCOPE_BASE_URL, QWEN_SEARCH_PATH } from './constants';
 import { logger } from '../../core/logger';
-import { monitor } from '../../core/monitor';
+import { monitor } from '../../core/monitor'; // Keep import for error recording if needed, or remove if unused
 import { quotaManager } from '../../core/quota';
 import { IStorage } from '../../core/storage';
 import { createSSETransformer } from '../../core/stream';
@@ -11,7 +11,7 @@ import { createSSETransformer } from '../../core/stream';
 export interface ProviderStatus {
     id: string;
     path: string;
-    alias?: string; // Added alias
+    alias?: string;
     status: 'active' | 'inactive' | 'error' | 'initializing';
     lastError?: string;
     totalRequests: number;
@@ -155,13 +155,12 @@ export class QwenProvider implements LLMProvider {
             if (!response.ok) {
                 if (response.status === 429) {
                     this.providerStatus.lastError = 'Rate Limited (429)';
-                    monitor.recordRequest('ratelimit', 'chat');
+                    // monitor.recordRequest removed, can add quotaManager.incrementError if needed
                     throw new Error('Rate limited');
                 }
                 this.providerStatus.errorCount++;
                 this.providerStatus.status = 'error';
                 this.providerStatus.lastError = `HTTP ${response.status}`;
-                monitor.recordRequest('error', 'chat');
                 throw new Error(`Upstream Error: ${response.status}`);
             }
 
@@ -171,11 +170,9 @@ export class QwenProvider implements LLMProvider {
             this.providerStatus.lastUsed = new Date();
             this.providerStatus.lastLatency = Date.now() - startTime;
 
+            // Unified Async Stats: Single Batch
             c.executionCtx.waitUntil(
-                Promise.all([
-                    (async () => monitor.recordRequest('success', 'chat'))(),
-                    (async () => quotaManager.incrementUsage(this.providerStatus.id, 'chat'))()
-                ])
+                quotaManager.incrementUsage(this.providerStatus.id, 'chat')
             );
 
             const newHeaders = new Headers();
@@ -247,11 +244,9 @@ export class QwenProvider implements LLMProvider {
             this.providerStatus.lastUsed = new Date();
             this.providerStatus.status = 'active';
 
+            // Unified Stats
             c.executionCtx.waitUntil(
-                Promise.all([
-                    (async () => monitor.recordRequest('success', 'search'))(),
-                    (async () => quotaManager.incrementUsage(this.providerStatus.id, 'search'))()
-                ])
+                quotaManager.incrementUsage(this.providerStatus.id, 'search')
             );
             
             const results = (data?.data?.docs || []).map((item: any) => ({
@@ -261,7 +256,7 @@ export class QwenProvider implements LLMProvider {
             return c.json({ success: true, query, results });
         } catch (error: any) {
             logger.error('WebSearch Failed', error);
-            monitor.recordRequest('error', 'search');
+            // monitor.recordRequest('error', 'search'); // Removed, handled by logs
             return c.json({ error: error.message }, 500);
         }
     }
