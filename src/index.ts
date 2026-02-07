@@ -20,6 +20,8 @@ export interface Env {
   SEARCH_DAILY_LIMIT?: string;
   SEARCH_RPM_LIMIT?: string;
   AUDIT_SUCCESS_LOG?: string;
+  PROVIDER_SCAN_SECONDS?: string;
+  PROVIDER_FULL_KV_SCAN_MINUTES?: string;
 }
 
 let appInstance: any;

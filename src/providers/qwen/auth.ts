@@ -30,6 +30,9 @@ export class QwenAuthManager {
     private credsKey: string;
     private clientId: string;
     private memoryCredentials?: QwenCredentials;
+    private memoryLoadedAt = 0;
+    private legacyChecked = false;
+    private readonly credentialsCacheTtlMs = 5000;
 
     constructor(storage: IStorage, credsKey: string, clientId: string) {
         this.storage = storage;
@@ -37,21 +40,35 @@ export class QwenAuthManager {
         this.clientId = clientId;
     }
 
-    private getCandidateKeys(): string[] {
-        return this.credsKey.startsWith('./') ? [this.credsKey] : [this.credsKey, `./${this.credsKey}`];
-    }
-
     public clearCache() {
         this.memoryCredentials = undefined;
+        this.memoryLoadedAt = 0;
     }
 
-    private async loadCredentials(): Promise<QwenCredentials | null> {
+    private async loadCredentials(forceRead = false): Promise<QwenCredentials | null> {
         try {
-            for (const key of this.getCandidateKeys()) {
-                const data = await this.storage.get(key);
-                if (data && data.access_token) {
-                    this.memoryCredentials = data;
-                    return data;
+            if (!forceRead && this.memoryCredentials && Date.now() - this.memoryLoadedAt < this.credentialsCacheTtlMs) {
+                return this.memoryCredentials;
+            }
+
+            const current = await this.storage.get(this.credsKey);
+            if (current && current.access_token) {
+                this.memoryCredentials = current;
+                this.memoryLoadedAt = Date.now();
+                return current;
+            }
+
+            if (!this.legacyChecked) {
+                this.legacyChecked = true;
+                const legacyKey = `./${this.credsKey}`;
+                const legacy = await this.storage.get(legacyKey);
+                if (legacy && legacy.access_token) {
+                    // One-time migration to canonical key to avoid double-reads forever.
+                    await this.storage.set(this.credsKey, legacy);
+                    await this.storage.delete(legacyKey);
+                    this.memoryCredentials = legacy;
+                    this.memoryLoadedAt = Date.now();
+                    return legacy;
                 }
             }
         } catch (error) {
@@ -63,12 +80,8 @@ export class QwenAuthManager {
     private async saveCredentials(creds: QwenCredentials): Promise<void> {
         try {
             await this.storage.set(this.credsKey, creds);
-            if (this.credsKey.startsWith('./')) {
-                await this.storage.delete(this.credsKey.substring(2));
-            } else {
-                await this.storage.delete(`./${this.credsKey}`);
-            }
             this.memoryCredentials = creds;
+            this.memoryLoadedAt = Date.now();
             logger.info(`Credentials saved successfully for ${this.credsKey}.`);
         } catch (error) {
             logger.error(`Failed to save credentials to storage key ${this.credsKey}`, error);
@@ -148,7 +161,7 @@ export class QwenAuthManager {
         }
 
         try {
-            const latest = await this.loadCredentials();
+            const latest = await this.loadCredentials(true);
             if (latest && latest.access_token && latest.refresh_token !== refreshToken) {
                  return latest;
             }
@@ -206,7 +219,7 @@ export class QwenAuthManager {
         const maxRetries = 30;
         for (let i = 0; i < maxRetries; i++) {
             await new Promise(r => setTimeout(r, 500));
-            const creds = await this.loadCredentials();
+            const creds = await this.loadCredentials(true);
             if (creds && creds.refresh_token !== oldRefreshToken) {
                 return creds;
             }

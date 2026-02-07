@@ -37,7 +37,11 @@ export async function createApp(config: AppConfig, storage: IStorage, db?: D1Dat
             storage, 
             authFiles,
             config.qwen_oauth_client_id,
-            providerRegistry
+            providerRegistry,
+            {
+                scanIntervalMs: (config.tuning?.provider_scan_seconds ?? 30) * 1000,
+                fullKvScanIntervalMs: (config.tuning?.provider_full_kv_scan_minutes ?? 15) * 60 * 1000
+            }
         );
         await qwenProvider.initialize();
         providerRouter.registerChatProvider({
@@ -68,7 +72,16 @@ export async function createApp(config: AppConfig, storage: IStorage, db?: D1Dat
 
     // 2. 管理路由 (固定路径 /admin)
     // 注意：我们将 adminApp 挂载到 /admin，其内部路由如 /ui 会自动变成 /admin/ui
-    const adminApp = createAdminRouter(storage, qwenProvider, config.qwen_oauth_client_id, config.api_key, providerRegistry);
+    const adminApp = createAdminRouter(
+        storage,
+        qwenProvider,
+        config.qwen_oauth_client_id,
+        config.api_key,
+        providerRegistry,
+        {
+            providerFullKvScanMinutes: config.tuning?.provider_full_kv_scan_minutes ?? 15
+        }
+    );
     app.route('/admin', adminApp);
     
     // 快捷重定向：访问 /ui 自动跳转到 /admin/ui

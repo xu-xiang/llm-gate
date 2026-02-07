@@ -23,6 +23,9 @@
   - OAuth token lifecycle
   - Multi-account routing/failover
   - Upstream request adaptation
+  - Provider pool refresh strategy:
+    - light refresh (D1 registry-first)
+    - low-frequency KV full scan fallback
 - `src/providers/router.ts`
   - Provider registry-style router
   - Keeps `/v1/chat` and `/v1/tools` decoupled from concrete providers

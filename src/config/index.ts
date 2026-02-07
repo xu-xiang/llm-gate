@@ -24,6 +24,13 @@ const ConfigSchema = z.object({
     audit: z.object({
         success_logs: z.boolean().default(false)
     }).default({ success_logs: false }),
+    tuning: z.object({
+        provider_scan_seconds: z.number().default(30),
+        provider_full_kv_scan_minutes: z.number().default(15)
+    }).default({
+        provider_scan_seconds: 30,
+        provider_full_kv_scan_minutes: 15
+    }),
     providers: z.object({
         qwen: z.object({
             enabled: z.boolean().default(true),
@@ -69,6 +76,9 @@ export function loadConfig(env: any): AppConfig {
     if (env.SEARCH_RPM_LIMIT) baseConfig.quota.search.rpm = parseInt(env.SEARCH_RPM_LIMIT, 10);
     if (!baseConfig.audit) baseConfig.audit = {};
     if (env.AUDIT_SUCCESS_LOG) baseConfig.audit.success_logs = env.AUDIT_SUCCESS_LOG === 'true';
+    if (!baseConfig.tuning) baseConfig.tuning = {};
+    if (env.PROVIDER_SCAN_SECONDS) baseConfig.tuning.provider_scan_seconds = parseInt(env.PROVIDER_SCAN_SECONDS, 10);
+    if (env.PROVIDER_FULL_KV_SCAN_MINUTES) baseConfig.tuning.provider_full_kv_scan_minutes = parseInt(env.PROVIDER_FULL_KV_SCAN_MINUTES, 10);
 
     try {
         return ConfigSchema.parse(baseConfig);

@@ -14,48 +14,62 @@ export class MultiQwenProvider implements LLMProvider {
     private staticAuthFiles: string[];
     private registry?: ProviderRegistry;
     private lastScanAt = 0;
-    private readonly scanIntervalMs = 5000;
+    private lastFullKvScanAt = 0;
+    private readonly scanIntervalMs: number;
+    private readonly fullKvScanIntervalMs: number;
     private scanPromise: Promise<void> | null = null;
 
-    constructor(storage: IStorage, authFiles: string[], clientId: string, registry?: ProviderRegistry) {
+    constructor(
+        storage: IStorage,
+        authFiles: string[],
+        clientId: string,
+        registry?: ProviderRegistry,
+        options?: { scanIntervalMs?: number; fullKvScanIntervalMs?: number }
+    ) {
         this.storage = storage;
-        this.staticAuthFiles = authFiles;
+        this.staticAuthFiles = Array.from(
+            new Set(authFiles.map((key) => this.normalizeKey(key)).filter(Boolean))
+        );
         this.clientId = clientId;
         this.registry = registry;
+        this.scanIntervalMs = Math.max(5000, options?.scanIntervalMs ?? 30000);
+        this.fullKvScanIntervalMs = Math.max(60000, options?.fullKvScanIntervalMs ?? 15 * 60 * 1000);
     }
 
     async initialize() {
-        await this.forceRescan();
+        await this.forceRescan('full');
     }
 
     private normalizeKey(key: string): string {
         return key.startsWith('./') ? key.substring(2) : key;
     }
 
-    private async scanAndLoadProviders() {
-        const [dynamicQwen, dynamicQwenLegacy, dynamicOauth, dynamicOauthLegacy] = await Promise.all([
-            this.storage.list('qwen_creds_'),
-            this.storage.list('./qwen_creds_'),
-            this.storage.list('oauth_creds_'),
-            this.storage.list('./oauth_creds_')
-        ]);
+    private async scanAndLoadProviders(mode: 'light' | 'full' = 'light') {
         const registryIds = (await this.registry?.listProviderIds()) || [];
         const aliasMap = (await this.registry?.getAliasMap()) || {};
 
-        const validStaticKeys: string[] = [];
-        for (const key of this.staticAuthFiles) {
-            const cleanKey = this.normalizeKey(key);
-            const exists = (await this.storage.get(cleanKey)) || (await this.storage.get(`./${cleanKey}`));
-            if (exists) validStaticKeys.push(cleanKey);
+        let kvDiscovered: string[] = [];
+        const needsFullScan = mode === 'full' || (registryIds.length === 0 && this.staticAuthFiles.length === 0);
+        if (needsFullScan) {
+            const [dynamicQwen, dynamicQwenLegacy, dynamicOauth, dynamicOauthLegacy] = await Promise.all([
+                this.storage.list('qwen_creds_'),
+                this.storage.list('./qwen_creds_'),
+                this.storage.list('oauth_creds_'),
+                this.storage.list('./oauth_creds_')
+            ]);
+            kvDiscovered = [
+                ...dynamicQwen,
+                ...dynamicQwenLegacy,
+                ...dynamicOauth,
+                ...dynamicOauthLegacy
+            ];
+            this.lastFullKvScanAt = Date.now();
         }
 
         const discoveredKeys = [
-            ...validStaticKeys,
+            ...this.staticAuthFiles,
             ...registryIds,
-            ...dynamicQwen,
-            ...dynamicQwenLegacy,
-            ...dynamicOauth,
-            ...dynamicOauthLegacy
+            ...kvDiscovered
         ].map((k) => this.normalizeKey(k));
 
         const allActiveKeys = Array.from(new Set(discoveredKeys));
@@ -93,12 +107,12 @@ export class MultiQwenProvider implements LLMProvider {
         }
     }
 
-    private async forceRescan(): Promise<void> {
+    private async forceRescan(mode: 'light' | 'full' = 'light'): Promise<void> {
         if (this.scanPromise) {
             await this.scanPromise;
             return;
         }
-        this.scanPromise = this.scanAndLoadProviders()
+        this.scanPromise = this.scanAndLoadProviders(mode)
             .finally(() => {
                 this.lastScanAt = Date.now();
                 this.scanPromise = null;
@@ -109,7 +123,8 @@ export class MultiQwenProvider implements LLMProvider {
     private async ensureFreshPool(): Promise<void> {
         const now = Date.now();
         if (now - this.lastScanAt < this.scanIntervalMs) return;
-        await this.forceRescan();
+        const needsFullKvScan = now - this.lastFullKvScanAt >= this.fullKvScanIntervalMs;
+        await this.forceRescan(needsFullKvScan ? 'full' : 'light');
     }
 
     public async addProvider(credsKey: string) {
@@ -120,7 +135,7 @@ export class MultiQwenProvider implements LLMProvider {
             logger.info(`Reloading provider ${normalized}...`);
             await existing.reload();
         } else {
-            await this.forceRescan();
+            await this.forceRescan('light');
         }
     }
 

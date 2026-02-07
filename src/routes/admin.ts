@@ -9,7 +9,14 @@ import crypto from 'node:crypto';
 import { ProviderRegistry } from '../core/providerRegistry';
 import { renderAdminPage } from './admin_ui';
 
-export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider | undefined, clientId: string, apiKey: string, registry?: ProviderRegistry) {
+export function createAdminRouter(
+    storage: IStorage,
+    qwenProvider: MultiQwenProvider | undefined,
+    clientId: string,
+    apiKey: string,
+    registry?: ProviderRegistry,
+    options?: { providerFullKvScanMinutes?: number }
+) {
     const app = new Hono();
 
     app.use('/api/*', async (c, next) => {
@@ -27,10 +34,25 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         const stats = await monitor.getStats();
         const providers = qwenProvider ? await qwenProvider.getAllProviderStatus() : [];
         const audit = await quotaManager.getRecentAudit(30);
+        const totalRequests = (stats.chat.total || 0) + (stats.search.total || 0);
+        const fullKvScanMinutes = Math.max(1, options?.providerFullKvScanMinutes ?? 15);
+        const estimatedKvListReadsPerDay = Math.ceil((24 * 60) / fullKvScanMinutes) * 4;
+        const estimatedKvReadsToday = totalRequests + estimatedKvListReadsPerDay;
+        const estimatedD1WritesToday = totalRequests * 4;
         return c.json({
             monitor: stats,
             qwen: { currentIndex: qwenProvider?.getCurrentIndex() ?? 0, providers: providers },
-            audit
+            audit,
+            budget: {
+                requestsToday: totalRequests,
+                estimatedKvReadsToday,
+                estimatedKvListReadsPerDay,
+                estimatedD1WritesToday,
+                notes: [
+                    'Estimated values, used for free-tier risk hinting.',
+                    'KV reads dominated by auth credential checks and periodic provider scans.'
+                ]
+            }
         });
     });
 

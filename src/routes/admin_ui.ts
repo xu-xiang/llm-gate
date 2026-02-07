@@ -59,12 +59,15 @@ export function renderAdminPage(): string {
         try {
             const res = await apiFetch('/api/stats'); const data = await res.json();
             const m = data.monitor; const active = data.qwen.providers.filter(p => p.status === 'active').length;
+            const budget = data.budget || {};
             document.getElementById('stats-grid').innerHTML = \`
                 <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value">\${Math.floor(m.uptime/3600)}h \${Math.floor(m.uptime%3600/60)}m</div></div>
                 <div class="stat-item"><div class="stat-label">Requests</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Rate Limited</div><div class="stat-value">\${(m.chat.rateLimited+m.search.rateLimited).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Errors</div><div class="stat-value">\${(m.chat.error+m.search.error).toLocaleString()}</div></div>
-                <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>\`;
+                <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>
+                <div class="stat-item"><div class="stat-label">Est. KV Reads Today</div><div class="stat-value">\${Number(budget.estimatedKvReadsToday || 0).toLocaleString()}</div></div>
+                <div class="stat-item"><div class="stat-label">Est. D1 Writes Today</div><div class="stat-value">\${Number(budget.estimatedD1WritesToday || 0).toLocaleString()}</div></div>\`;
             document.getElementById('provider-list').innerHTML = data.qwen.providers.map(p => {
                 const daily = p.quota?.chat?.daily || {used:0, limit:2000, percent:0}; const rpm = p.quota?.chat?.rpm || {used:0, limit:60, percent:0};
                 const alias = p.alias || 'Unnamed'; const rawId = p.id;
@@ -109,4 +112,3 @@ export function renderAdminPage(): string {
     if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 5000); } else { showLogin(); }
 </script></body></html>`;
 }
-

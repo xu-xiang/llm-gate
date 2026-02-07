@@ -18,6 +18,8 @@ npm run deploy
 - `CHAT_DAILY_LIMIT`
 - `CHAT_RPM_LIMIT`
 - `AUDIT_SUCCESS_LOG` (`false` by default)
+- `PROVIDER_SCAN_SECONDS` (`30` by default)
+- `PROVIDER_FULL_KV_SCAN_MINUTES` (`15` by default)
 
 ## Health Checks
 - Worker health: `GET /health`
@@ -49,4 +51,5 @@ curl -k -X POST 'https://<domain>/v1/chat/completions' \
 - Minute-level aggregation with upsert (no per-request raw logs)
 - `AUDIT_SUCCESS_LOG=false` hides success rows from UI list
 - D1 writes are batched through `flushChain`
-
+- Provider pool uses D1 registry-first refresh, not high-frequency KV full scan
+- OAuth credentials are cached in-memory for 5s per isolate to reduce KV read QPS

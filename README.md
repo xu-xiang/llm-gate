@@ -53,6 +53,8 @@
 | **`MODEL_MAPPINGS`** | 否 | `{"research-model-v1": "coder-model"}` | 模型名称映射 (JSON 格式)。 |
 | **`QWEN_CREDS_JSON`** | 否 | 无 | **自动播种**。可填入 `oauth_creds.json` 内容，首次启动自动写入 KV。 |
 | **`AUDIT_SUCCESS_LOG`** | 否 | `false` | 是否记录成功请求到 `Recent Audit`。默认关闭可节省 D1 写入额度。 |
+| **`PROVIDER_SCAN_SECONDS`** | 否 | `30` | Provider 池轻量刷新间隔（秒）。调大可降低 KV 压力。 |
+| **`PROVIDER_FULL_KV_SCAN_MINUTES`** | 否 | `15` | Provider 池全量 KV 扫描间隔（分钟）。调大可进一步降低 KV 调用。 |
 
 ---
 
