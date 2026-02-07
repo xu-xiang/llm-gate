@@ -24,16 +24,29 @@
 
 ## 🚀 快速部署
 
-### 方式一：一键部署 (推荐)
-点击顶部的 **[Deploy to Cloudflare Workers]** 蓝色按钮，按指引完成 KV 创建与环境变量配置即可。
+### 方式一：一条命令自动部署 (推荐)
+```bash
+API_KEY='your-strong-key' npm run deploy:bootstrap
+```
+
+这个命令会自动：
+- 校验 `wrangler` 登录状态
+- 自动创建（或复用）KV + D1
+- 自动回填 `wrangler.toml` 里的绑定 ID
+- 自动写入 `API_KEY` secret
+- 自动执行 deploy 并健康检查
 
 ### 方式二：手动部署
 1.  **创建 KV 空间**：
     ```bash
     npx wrangler kv:namespace create AUTH_STORE
     ```
-2.  **修改配置**：将生成的 `id` 填入 `wrangler.toml` 的 `[[kv_namespaces]]` 部分。
-3.  **部署**：
+2.  **创建 D1 数据库**：
+    ```bash
+    npx wrangler d1 create llm-gate-db
+    ```
+3.  **修改配置**：将生成的 `id/database_id` 填入 `wrangler.toml`。
+4.  **部署**：
     ```bash
     npm run deploy
     ```
@@ -57,6 +70,18 @@
 | **`PROVIDER_FULL_KV_SCAN_MINUTES`** | 否 | `30` | Provider 池全量 KV 扫描间隔（分钟）。调大可进一步降低 KV 调用。 |
 
 ---
+
+## ⚡ 首次上线（最少人工操作）
+
+1. 运行自动化部署命令（只需一次）：
+   ```bash
+   API_KEY='your-strong-key' npm run deploy:bootstrap
+   ```
+2. 打开 `https://<your-domain>/ui`，用 `API_KEY` 登录。
+3. 只做一次页面操作：`Add Account` 完成 Qwen OAuth 绑定。
+4. API 客户端直接调用 `https://<your-domain>/v1/chat/completions`。
+
+> 说明：OAuth 授权是唯一必须的人机交互步骤，其他资源创建和部署都可脚本自动化。
 
 ## 🖥️ 使用指引
 
@@ -97,4 +122,5 @@ npm run test:e2e
 
 - 架构说明：`docs/ARCHITECTURE.md`
 - 运维手册：`docs/OPERATIONS.md`
+- 部署说明：`docs/DEPLOY.md`
 - Provider 扩展：`docs/PROVIDERS.md`

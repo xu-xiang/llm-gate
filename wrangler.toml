@@ -5,14 +5,14 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "AUTH_STORE"
-# 必须保留 id 字段以通过 wrangler 校验。
-# 线上会自动使用你在 Cloudflare 控制台 Settings -> Bindings 中手动关联的真实 ID。
-id = "f02f525d1f1e4f129183858979a6fc22" 
+# For first-time setup on a new account, run:
+# API_KEY='your-strong-key' npm run deploy:bootstrap
+id = "f02f525d1f1e4f129183858979a6fc22"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "llm-gate-db"
-database_id = "092a81ac-7bbc-4cc4-8d34-392c267b1401" 
+database_id = "092a81ac-7bbc-4cc4-8d34-392c267b1401"
 
 [vars]
 # [移除] API_KEY = "" 

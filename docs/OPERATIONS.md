@@ -7,6 +7,11 @@ npx tsc --noEmit
 npm run deploy
 ```
 
+## Bootstrap Deploy (Recommended)
+```bash
+API_KEY='your-strong-key' npm run deploy:bootstrap
+```
+
 ## Required Bindings
 - KV: `AUTH_STORE`
 - D1: `DB`
