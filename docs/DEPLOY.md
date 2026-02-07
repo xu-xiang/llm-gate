@@ -40,6 +40,7 @@ File: `scripts/bootstrap-deploy.sh`
 4. Run periodic checks:
    - `curl https://<domain>/health`
    - `wrangler tail --status error`
+5. Keep periodic full KV scan disabled (`PROVIDER_FULL_KV_SCAN_MINUTES=0`) unless you explicitly need legacy KV discovery.
 
 ## Notes
 

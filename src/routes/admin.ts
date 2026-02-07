@@ -35,8 +35,10 @@ export function createAdminRouter(
         const providers = qwenProvider ? await qwenProvider.getAllProviderStatus() : [];
         const audit = await quotaManager.getRecentAudit(30);
         const totalRequests = (stats.chat.total || 0) + (stats.search.total || 0);
-        const fullKvScanMinutes = Math.max(1, options?.providerFullKvScanMinutes ?? 30);
-        const estimatedKvListReadsPerDay = Math.ceil((24 * 60) / fullKvScanMinutes) * 4;
+        const fullKvScanMinutes = Math.max(0, options?.providerFullKvScanMinutes ?? 0);
+        const estimatedKvListReadsPerDay = fullKvScanMinutes > 0
+            ? Math.ceil((24 * 60) / fullKvScanMinutes) * 4
+            : 0;
         const estimatedKvReadsToday = totalRequests + estimatedKvListReadsPerDay;
         const estimatedD1WritesToday = totalRequests;
         return c.json({
@@ -50,7 +52,10 @@ export function createAdminRouter(
                 estimatedD1WritesToday,
                 notes: [
                     'Estimated values, used for free-tier risk hinting.',
-                    'KV reads dominated by auth credential checks and periodic provider scans.',
+                    'KV reads dominated by auth credential checks.',
+                    fullKvScanMinutes > 0
+                        ? 'Periodic full KV scan is enabled.'
+                        : 'Periodic full KV scan is disabled; full scans happen on management actions or manual trigger.',
                     'D1 writes are mainly minute-audit upserts (roughly one write per request).'
                 ]
             }
@@ -81,6 +86,7 @@ export function createAdminRouter(
             await storage.delete(`pending_${device_code}`);
             await registry?.upsertProvider(saveId, result.alias);
             await qwenProvider?.addProvider(saveId);
+            await qwenProvider?.manualRescan('full');
             return c.json({ status: 'success', id: saveId });
         } catch (e: any) { return c.json({ status: 'error', message: e.message }); }
     });
@@ -97,6 +103,7 @@ export function createAdminRouter(
             await storage.delete(altId);
             await registry?.setAlias(id, alias);
             await qwenProvider?.addProvider(id);
+            await qwenProvider?.manualRescan('full');
         }
         return c.json({ success: true });
     });
@@ -109,6 +116,13 @@ export function createAdminRouter(
         else await storage.delete(`./${id}`);
         await registry?.removeProvider(id);
         await qwenProvider?.removeProvider(id);
+        await qwenProvider?.manualRescan('full');
+        return c.json({ success: true });
+    });
+
+    app.post('/api/providers/rescan', async (c) => {
+        const mode = c.req.query('mode') === 'light' ? 'light' : 'full';
+        await qwenProvider?.manualRescan(mode);
         return c.json({ success: true });
     });
 

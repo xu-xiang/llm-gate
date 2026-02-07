@@ -24,7 +24,7 @@ API_KEY='your-strong-key' npm run deploy:bootstrap
 - `CHAT_RPM_LIMIT`
 - `AUDIT_SUCCESS_LOG` (`false` by default)
 - `PROVIDER_SCAN_SECONDS` (`60` by default)
-- `PROVIDER_FULL_KV_SCAN_MINUTES` (`30` by default)
+- `PROVIDER_FULL_KV_SCAN_MINUTES` (`0` by default; periodic full KV scan disabled)
 
 ## Health Checks
 - Worker health: `GET /health`
@@ -57,4 +57,5 @@ curl -k -X POST 'https://<domain>/v1/chat/completions' \
 - `AUDIT_SUCCESS_LOG=false` hides success rows from UI list
 - D1 writes only persist minute aggregate (`request_audit_minute`) per request path
 - Provider pool uses D1 registry-first refresh, not high-frequency KV full scan
+- Full KV rescan now runs on management operations (add/delete/rename) or manual admin trigger
 - OAuth credentials are cached in-memory for 5s per isolate to reduce KV read QPS

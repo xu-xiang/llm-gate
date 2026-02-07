@@ -39,8 +39,7 @@ export async function createApp(config: AppConfig, storage: IStorage, db?: D1Dat
             config.qwen_oauth_client_id,
             providerRegistry,
             {
-                scanIntervalMs: (config.tuning?.provider_scan_seconds ?? 30) * 1000,
-                fullKvScanIntervalMs: (config.tuning?.provider_full_kv_scan_minutes ?? 15) * 60 * 1000
+                scanIntervalMs: (config.tuning?.provider_scan_seconds ?? 30) * 1000
             }
         );
         await qwenProvider.initialize();

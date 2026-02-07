@@ -38,7 +38,7 @@ export function renderAdminPage(): string {
 <body>
     <div id="loginOverlay"><div class="card" style="width:350px; text-align:center"><h3>🔐 Unlock Console</h3><input type="password" id="loginKey" placeholder="API_KEY" style="width:100%; padding:12px; margin:15px 0; border:1px solid var(--border); border-radius:6px"><button class="btn btn-primary" style="width:100%" onclick="doLogin()">Unlock</button></div></div>
     <div class="container" id="mainApp" style="display:none">
-        <div class="header"><a href="#" class="logo"><span>⚡</span> LLM Gateway</a><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-outline" id="autoRefreshBtn" onclick="toggleAutoRefresh()">Auto Refresh: OFF</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button><button class="btn btn-danger" onclick="logout()">Logout</button></div></div>
+        <div class="header"><a href="#" class="logo"><span>⚡</span> LLM Gateway</a><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-outline" onclick="triggerRescan()">Rescan KV</button><button class="btn btn-outline" id="autoRefreshBtn" onclick="toggleAutoRefresh()">Auto Refresh: OFF</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button><button class="btn btn-danger" onclick="logout()">Logout</button></div></div>
         <div class="stats-grid" id="stats-grid"></div>
         <div class="card"><h2>Provider Pool</h2><div style="overflow-x:auto"><table><thead><tr><th>Account</th><th>Status</th><th>Latency</th><th>Usage</th><th>RPM</th><th>Actions</th></tr></thead><tbody id="provider-list"></tbody></table></div></div>
         <div class="card"><h2>Recent Audit (Minute Aggregate)</h2><div style="overflow-x:auto"><table><thead><tr><th>Minute</th><th>Provider</th><th>Kind</th><th>Outcome</th><th>Count</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
@@ -72,6 +72,10 @@ export function renderAdminPage(): string {
         updateAutoRefreshButton();
         if (next) startAutoRefresh();
         else stopAutoRefresh();
+    }
+    async function triggerRescan() {
+        await apiFetch('/api/providers/rescan', { method: 'POST' });
+        await loadData();
     }
     async function apiFetch(path, options = {}) {
         const res = await fetch('/admin' + path, { ...options, headers: { ...authHeaders(), ...options.headers } });
