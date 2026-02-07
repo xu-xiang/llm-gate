@@ -25,11 +25,11 @@ const ConfigSchema = z.object({
         success_logs: z.boolean().default(false)
     }).default({ success_logs: false }),
     tuning: z.object({
-        provider_scan_seconds: z.number().default(30),
-        provider_full_kv_scan_minutes: z.number().default(15)
+        provider_scan_seconds: z.number().default(60),
+        provider_full_kv_scan_minutes: z.number().default(30)
     }).default({
-        provider_scan_seconds: 30,
-        provider_full_kv_scan_minutes: 15
+        provider_scan_seconds: 60,
+        provider_full_kv_scan_minutes: 30
     }),
     providers: z.object({
         qwen: z.object({

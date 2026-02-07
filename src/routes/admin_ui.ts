@@ -62,7 +62,7 @@ export function renderAdminPage(): string {
             const budget = data.budget || {};
             document.getElementById('stats-grid').innerHTML = \`
                 <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value">\${Math.floor(m.uptime/3600)}h \${Math.floor(m.uptime%3600/60)}m</div></div>
-                <div class="stat-item"><div class="stat-label">Requests</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
+                <div class="stat-item"><div class="stat-label">Requests Today</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Rate Limited</div><div class="stat-value">\${(m.chat.rateLimited+m.search.rateLimited).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Errors</div><div class="stat-value">\${(m.chat.error+m.search.error).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>
@@ -109,6 +109,6 @@ export function renderAdminPage(): string {
     async function deleteProvider(id) { if(confirm('Delete?')) { await apiFetch('/api/providers?id=' + encodeURIComponent(id), { method: 'DELETE' }); loadData(); } }
     function closeModal() { if(pollInterval) clearInterval(pollInterval); hideModal('authModal'); }
     function closeRenameModal() { hideModal('renameModal'); }
-    if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 5000); } else { showLogin(); }
+    if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 15000); } else { showLogin(); }
 </script></body></html>`;
 }

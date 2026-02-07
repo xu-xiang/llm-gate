@@ -35,10 +35,10 @@ export function createAdminRouter(
         const providers = qwenProvider ? await qwenProvider.getAllProviderStatus() : [];
         const audit = await quotaManager.getRecentAudit(30);
         const totalRequests = (stats.chat.total || 0) + (stats.search.total || 0);
-        const fullKvScanMinutes = Math.max(1, options?.providerFullKvScanMinutes ?? 15);
+        const fullKvScanMinutes = Math.max(1, options?.providerFullKvScanMinutes ?? 30);
         const estimatedKvListReadsPerDay = Math.ceil((24 * 60) / fullKvScanMinutes) * 4;
         const estimatedKvReadsToday = totalRequests + estimatedKvListReadsPerDay;
-        const estimatedD1WritesToday = totalRequests * 4;
+        const estimatedD1WritesToday = totalRequests;
         return c.json({
             monitor: stats,
             qwen: { currentIndex: qwenProvider?.getCurrentIndex() ?? 0, providers: providers },
@@ -50,7 +50,8 @@ export function createAdminRouter(
                 estimatedD1WritesToday,
                 notes: [
                     'Estimated values, used for free-tier risk hinting.',
-                    'KV reads dominated by auth credential checks and periodic provider scans.'
+                    'KV reads dominated by auth credential checks and periodic provider scans.',
+                    'D1 writes are mainly minute-audit upserts (roughly one write per request).'
                 ]
             }
         });

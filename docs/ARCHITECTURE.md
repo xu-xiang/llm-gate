@@ -30,13 +30,12 @@
   - Provider registry-style router
   - Keeps `/v1/chat` and `/v1/tools` decoupled from concrete providers
 - `src/core/`
-  - `quota.ts`: daily + RPM accounting and audit aggregation
+  - `quota.ts`: daily + RPM accounting from minute audit aggregation
   - `providerRegistry.ts`: stable provider ID/alias persistence
   - `storage.ts`: KV abstraction + distributed lock
   - `monitor.ts`: global counters and uptime
 
 ## Data Model (D1)
-- `usage_stats(date, provider_id, kind, count)`
 - `request_audit_minute(minute_bucket, provider_id, kind, outcome, count)`
 - `global_monitor(key, value)`
 - `providers(id, alias, updated_at)`

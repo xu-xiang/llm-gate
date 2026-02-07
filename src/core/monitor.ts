@@ -1,7 +1,10 @@
 import { D1Database } from '@cloudflare/workers-types';
+import { getBeijingDate } from './time';
 
 export class Monitor {
     private db?: D1Database;
+    private statsCache?: { expiresAt: number; value: any };
+    private readonly statsCacheTtlMs = 5000;
 
     public async init(db?: D1Database) {
         this.db = db;
@@ -18,32 +21,69 @@ export class Monitor {
 
     public async getStats() {
         if (!this.db) return this.getFallbackStats();
+        if (this.statsCache && this.statsCache.expiresAt > Date.now()) {
+            return this.statsCache.value;
+        }
 
         try {
-            const results = await this.db.prepare("SELECT key, value FROM global_monitor").all();
-            const statsMap: Record<string, number> = {};
-            results.results.forEach((row: any) => {
-                statsMap[row.key] = row.value;
-            });
-
+            const uptimeRow = await this.db
+                .prepare("SELECT value FROM global_monitor WHERE key = 'uptime_start' LIMIT 1")
+                .first<any>();
             const now = Math.floor(Date.now() / 1000);
-            const uptimeStart = statsMap['uptime_start'] || now;
-            
-            return {
+            const uptimeStart = Number(uptimeRow?.value || now);
+            const datePrefix = `${getBeijingDate()}%`;
+            const rows = await this.db
+                .prepare(
+                    `SELECT kind,
+                            SUM(count) as total,
+                            SUM(CASE WHEN outcome = 'success' THEN count ELSE 0 END) as success,
+                            SUM(CASE
+                                WHEN outcome LIKE 'limited:%'
+                                  OR outcome = 'error:upstream_429'
+                                  OR outcome = 'error:upstream_quota_exceeded'
+                                THEN count ELSE 0 END) as rate_limited,
+                            SUM(CASE
+                                WHEN outcome != 'success'
+                                  AND outcome NOT LIKE 'limited:%'
+                                  AND outcome != 'error:upstream_429'
+                                  AND outcome != 'error:upstream_quota_exceeded'
+                                THEN count ELSE 0 END) as error
+                     FROM request_audit_minute
+                     WHERE minute_bucket LIKE ?1
+                     GROUP BY kind`
+                )
+                .bind(datePrefix)
+                .all();
+
+            const out = {
                 uptime: now - uptimeStart,
                 chat: {
-                    total: statsMap['chat_total'] || 0,
-                    success: statsMap['chat_success'] || 0,
-                    error: statsMap['chat_error'] || 0,
-                    rateLimited: statsMap['chat_rate_limited'] || 0
+                    total: 0,
+                    success: 0,
+                    error: 0,
+                    rateLimited: 0
                 },
                 search: {
-                    total: statsMap['search_total'] || 0,
-                    success: statsMap['search_success'] || 0,
-                    error: statsMap['search_error'] || 0,
-                    rateLimited: statsMap['search_rate_limited'] || 0
+                    total: 0,
+                    success: 0,
+                    error: 0,
+                    rateLimited: 0
                 }
             };
+
+            for (const row of rows.results as any[]) {
+                const kind = row.kind === 'search' ? 'search' : 'chat';
+                out[kind].total = Number(row.total || 0);
+                out[kind].success = Number(row.success || 0);
+                out[kind].error = Number(row.error || 0);
+                out[kind].rateLimited = Number(row.rate_limited || 0);
+            }
+
+            this.statsCache = {
+                value: out,
+                expiresAt: Date.now() + this.statsCacheTtlMs
+            };
+            return out;
         } catch (e) {
             return this.getFallbackStats();
         }

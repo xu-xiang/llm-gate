@@ -14,9 +14,7 @@ class QuotaManager {
     private storage?: IStorage;
     private db?: D1Database;
 
-    private pendingUsageWrites: Map<string, number> = new Map();
     private pendingAuditWrites: Map<string, number> = new Map();
-    private globalBuffer: Record<string, number> = {};
 
     private chatDailyLimit = 2000;
     private chatRpmLimit = 60;
@@ -94,22 +92,11 @@ class QuotaManager {
         });
     }
 
-    private bufferUsage(providerId: string, kind: UsageKind, count: number) {
-        const cleanId = this.normalizeProviderId(providerId);
-        const date = getBeijingDate();
-        const usageKey = `${date}|${cleanId}|${kind}`;
-        this.pendingUsageWrites.set(usageKey, (this.pendingUsageWrites.get(usageKey) || 0) + count);
-    }
-
     private bufferAudit(providerId: string, kind: UsageKind, outcome: string, count = 1) {
         const cleanId = this.normalizeProviderId(providerId);
         const minuteBucket = getBeijingMinuteBucket();
         const auditKey = `${minuteBucket}|${cleanId}|${kind}|${outcome}`;
         this.pendingAuditWrites.set(auditKey, (this.pendingAuditWrites.get(auditKey) || 0) + count);
-    }
-
-    private bumpGlobal(key: string, count = 1) {
-        this.globalBuffer[key] = (this.globalBuffer[key] || 0) + count;
     }
 
     private async loadUsageFromDb(providerId: string): Promise<UsageByType> {
@@ -122,11 +109,12 @@ class QuotaManager {
             const rows = await this.db
                 .prepare(`
                     SELECT kind, SUM(count) as count
-                    FROM usage_stats
-                    WHERE date = ?1 AND provider_id IN (?2, ?3)
+                    FROM request_audit_minute
+                    WHERE minute_bucket LIKE ?1
+                      AND provider_id IN (?2, ?3)
                     GROUP BY kind
                 `)
-                .bind(date, cleanId, `./${cleanId}`)
+                .bind(`${date}%`, cleanId, `./${cleanId}`)
                 .all();
 
             const usage: UsageByType = { chat: 0, search: 0 };
@@ -198,12 +186,10 @@ class QuotaManager {
         const rpmLimit = kind === 'chat' ? this.chatRpmLimit : this.searchRpmLimit;
 
         if (dailyLimit > 0 && dailyUsed >= dailyLimit) {
-            await this.recordLimitHit(providerId, kind, 'daily');
             return { allowed: false, reason: 'daily' };
         }
 
         if (rpmLimit > 0 && rpmUsed >= rpmLimit) {
-            await this.recordLimitHit(providerId, kind, 'rpm');
             return { allowed: false, reason: 'rpm' };
         }
 
@@ -212,12 +198,8 @@ class QuotaManager {
 
     public async incrementUsage(providerId: string, kind: UsageKind = 'chat'): Promise<void> {
         this.bumpRpm(providerId, kind);
-        this.bufferUsage(providerId, kind, 1);
         // Always persist minute-level success aggregate so RPM is accurate across isolates.
         this.bufferAudit(providerId, kind, 'success', 1);
-
-        this.bumpGlobal(`${kind}_total`, 1);
-        this.bumpGlobal(`${kind}_success`, 1);
 
         this.mergeUsageToCache(providerId, kind, 1);
 
@@ -226,20 +208,14 @@ class QuotaManager {
 
     public async recordFailure(providerId: string, kind: UsageKind, reason: string): Promise<void> {
         this.bumpRpm(providerId, kind);
-        this.bufferUsage(providerId, kind, 1);
         this.bufferAudit(providerId, kind, `error:${reason}`, 1);
-        this.bumpGlobal(`${kind}_total`, 1);
-        this.bumpGlobal(`${kind}_error`, 1);
         this.mergeUsageToCache(providerId, kind, 1);
         await this.flushBufferedWrites();
     }
 
     public async recordLimitHit(providerId: string, kind: UsageKind, reason: LimitReason): Promise<void> {
         this.bumpRpm(providerId, kind);
-        this.bufferUsage(providerId, kind, 1);
         this.bufferAudit(providerId, kind, `limited:${reason}`, 1);
-        this.bumpGlobal(`${kind}_total`, 1);
-        this.bumpGlobal(`${kind}_rate_limited`, 1);
         this.mergeUsageToCache(providerId, kind, 1);
         await this.flushBufferedWrites();
     }
@@ -247,29 +223,11 @@ class QuotaManager {
     private async flushToDB() {
         if (!this.db) return;
 
-        const usageEntries = Array.from(this.pendingUsageWrites.entries());
         const auditEntries = Array.from(this.pendingAuditWrites.entries());
-        const globalEntries = Object.entries(this.globalBuffer).filter(([, value]) => value > 0);
 
-        this.pendingUsageWrites.clear();
         this.pendingAuditWrites.clear();
-        this.globalBuffer = {};
 
         const batch = [];
-
-        for (const [key, count] of usageEntries) {
-            const [date, providerId, kind] = key.split('|');
-            batch.push(
-                this.db
-                    .prepare(`
-                        INSERT INTO usage_stats (date, provider_id, kind, count)
-                        VALUES (?1, ?2, ?3, ?4)
-                        ON CONFLICT(date, provider_id, kind)
-                        DO UPDATE SET count = count + excluded.count
-                    `)
-                    .bind(date, providerId, kind, count)
-            );
-        }
 
         for (const [key, count] of auditEntries) {
             const [minuteBucket, providerId, kind, outcome] = key.split('|');
@@ -282,19 +240,6 @@ class QuotaManager {
                         DO UPDATE SET count = count + excluded.count
                     `)
                     .bind(minuteBucket, providerId, kind, outcome, count)
-            );
-        }
-
-        for (const [key, count] of globalEntries) {
-            batch.push(
-                this.db
-                    .prepare(`
-                        INSERT INTO global_monitor (key, value)
-                        VALUES (?1, ?2)
-                        ON CONFLICT(key)
-                        DO UPDATE SET value = value + excluded.value
-                    `)
-                    .bind(key, count)
             );
         }
 
@@ -364,12 +309,12 @@ class QuotaManager {
                     .prepare(
                         `
                         SELECT provider_id, kind, SUM(count) AS count
-                        FROM usage_stats
-                        WHERE date = ?1 AND provider_id IN (${placeholders})
+                        FROM request_audit_minute
+                        WHERE minute_bucket LIKE ?1 AND provider_id IN (${placeholders})
                         GROUP BY provider_id, kind
                         `
                     )
-                    .bind(date, ...queryIds)
+                    .bind(`${date}%`, ...queryIds)
                     .all();
 
                 for (const row of usageRows.results as any[]) {
