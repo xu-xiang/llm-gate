@@ -35,10 +35,15 @@ export async function createApp(config: AppConfig, storage: IStorage) {
         await qwenProvider.initialize();
     }
 
-    await quotaManager.init(storage);
+    if (!quotaManager.isReady()) {
+        await quotaManager.init(storage);
+    }
     quotaManager.setLimits({
         chat: { daily: config.quota?.chat?.daily, rpm: config.quota?.chat?.rpm },
         search: { daily: config.quota?.search?.daily, rpm: config.quota?.search?.rpm }
+    });
+    quotaManager.setAuditOptions({
+        success: config.audit?.success_logs
     });
 
     // 1. 公共路由 (根路径健康检查)
@@ -47,7 +52,7 @@ export async function createApp(config: AppConfig, storage: IStorage) {
 
     // 2. 管理路由 (固定路径 /admin)
     // 注意：我们将 adminApp 挂载到 /admin，其内部路由如 /ui 会自动变成 /admin/ui
-    const adminApp = createAdminRouter(storage, qwenProvider!, config.qwen_oauth_client_id, config.api_key);
+    const adminApp = createAdminRouter(storage, qwenProvider, config.qwen_oauth_client_id, config.api_key);
     app.route('/admin', adminApp);
     
     // 快捷重定向：访问 /ui 自动跳转到 /admin/ui

@@ -19,6 +19,7 @@ export interface Env {
   CHAT_RPM_LIMIT?: string;
   SEARCH_DAILY_LIMIT?: string;
   SEARCH_RPM_LIMIT?: string;
+  AUDIT_SUCCESS_LOG?: string;
 }
 
 let appInstance: any;
@@ -38,31 +39,34 @@ async function seedCredentialsIfNeeded(env: Env, storage: KVStorage) {
     }
 }
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS usage_stats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    provider_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    count INTEGER DEFAULT 0,
-    UNIQUE(date, provider_id, kind)
-);
-CREATE TABLE IF NOT EXISTS global_monitor (
-    key TEXT PRIMARY KEY,
-    value INTEGER DEFAULT 0
-);
-INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch());
-`;
+const MIGRATION_SQL = [
+  `CREATE TABLE IF NOT EXISTS usage_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      count INTEGER DEFAULT 0,
+      UNIQUE(date, provider_id, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS global_monitor (
+      key TEXT PRIMARY KEY,
+      value INTEGER DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS request_audit_minute (
+      minute_bucket TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      count INTEGER DEFAULT 0,
+      PRIMARY KEY (minute_bucket, provider_id, kind, outcome)
+  )`,
+  `INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch())`
+];
 
 async function migrateDatabase(db: D1Database) {
     try {
-        // Check if table exists
-        const check = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='global_monitor'").first();
-        if (!check) {
-            console.log('[INIT] D1 Database is empty. Running auto-migration...');
-            await db.exec(SCHEMA_SQL);
-            console.log('[INIT] D1 Migration completed.');
-        }
+        await db.batch(MIGRATION_SQL.map((sql) => db.prepare(sql)));
+        console.log('[INIT] D1 Migration checked.');
     } catch (e) {
         console.error('[INIT] D1 Migration failed:', e);
     }
@@ -91,8 +95,7 @@ export default {
         }
 
         const config = loadConfig(env);
-        const adminKey = (config.api_key || 'admin').trim();
-        console.log(`[BOOT] Admin Console Path: /${adminKey}/ui`);
+        console.log('[BOOT] Admin Console Path: /admin/ui (Shortcut: /ui)');
         
         appInstance = await createApp(config, storage);
         console.log('--- LLM GATEWAY READY ---');

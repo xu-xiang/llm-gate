@@ -22,31 +22,45 @@ export class MultiQwenProvider implements LLMProvider {
         await this.scanAndLoadProviders();
     }
 
+    private normalizeKey(key: string): string {
+        return key.startsWith('./') ? key.substring(2) : key;
+    }
+
     private async scanAndLoadProviders() {
-        const dynamicKeys = await this.storage.list('qwen_creds_');
-        
+        const [dynamicQwen, dynamicQwenLegacy, dynamicOauth, dynamicOauthLegacy] = await Promise.all([
+            this.storage.list('qwen_creds_'),
+            this.storage.list('./qwen_creds_'),
+            this.storage.list('oauth_creds_'),
+            this.storage.list('./oauth_creds_')
+        ]);
+
         const validStaticKeys: string[] = [];
         for (const key of this.staticAuthFiles) {
-            const exists = await this.storage.get(key);
-            if (exists) validStaticKeys.push(key);
+            const cleanKey = this.normalizeKey(key);
+            const exists = (await this.storage.get(cleanKey)) || (await this.storage.get(`./${cleanKey}`));
+            if (exists) validStaticKeys.push(cleanKey);
         }
-        
-        // Normalize keys: Remove ./ prefix to ensure consistency
-        const allActiveKeys = Array.from(new Set([...validStaticKeys, ...dynamicKeys]))
-            .map(k => k.startsWith('./') ? k.substring(2) : k);
+
+        const discoveredKeys = [
+            ...validStaticKeys,
+            ...dynamicQwen,
+            ...dynamicQwenLegacy,
+            ...dynamicOauth,
+            ...dynamicOauthLegacy
+        ].map((k) => this.normalizeKey(k));
+
+        const allActiveKeys = Array.from(new Set(discoveredKeys));
 
         logger.info(`Refreshing provider pool. Active: ${allActiveKeys.length}`);
 
-        const currentMap = new Map(this.providers.map(p => [p.getStatus().id, p]));
+        const currentMap = new Map(this.providers.map((p) => [p.getRuntimeStatus().id, p]));
         const newProviders: QwenProvider[] = [];
         const initPromises: Promise<void>[] = [];
 
         for (const key of allActiveKeys) {
-            // Check if we have an existing instance with this ID
             if (currentMap.has(key)) {
                 newProviders.push(currentMap.get(key)!);
             } else {
-                // Pass clean key (no ./)
                 const p = new QwenProvider(this.storage, key, this.clientId);
                 initPromises.push(p.initialize());
                 newProviders.push(p);
@@ -58,35 +72,48 @@ export class MultiQwenProvider implements LLMProvider {
         }
 
         this.providers = newProviders;
+        if (this.currentIndex >= this.providers.length) {
+            this.currentIndex = 0;
+        }
     }
 
     public async addProvider(credsKey: string) {
-        // If provider exists, reload it to pick up changes (e.g. alias update or new token)
-        const existing = this.providers.find(p => p.getStatus().id === credsKey);
+        const normalized = this.normalizeKey(credsKey);
+        const existing = this.providers.find((p) => p.getRuntimeStatus().id === normalized);
         if (existing) {
-            logger.info(`Reloading provider ${credsKey}...`);
+            logger.info(`Reloading provider ${normalized}...`);
             await existing.reload();
         } else {
-            // New provider, rescan
             await this.scanAndLoadProviders();
         }
     }
 
     public async removeProvider(credsKey: string) {
-        // Assume storage delete happens outside, we just re-scan
-        // Or we filter manually
-        this.providers = this.providers.filter(p => p.getStatus().id !== credsKey);
+        const normalized = this.normalizeKey(credsKey);
+        this.providers = this.providers.filter((p) => p.getRuntimeStatus().id !== normalized);
+        if (this.currentIndex >= this.providers.length) {
+            this.currentIndex = 0;
+        }
     }
 
     public async getAllProviderStatus(): Promise<ProviderStatus[]> {
-        return Promise.all(this.providers.map(p => p.getStatus()));
+        const baseStatuses = this.providers.map((p) => p.getStatusBase());
+        const usageMap = await quotaManager.getUsageBatch(baseStatuses.map((s) => s.id));
+        return baseStatuses.map((s) => ({
+            ...s,
+            quota: usageMap[s.id]
+        }));
     }
 
     public getCurrentIndex(): number {
         return this.currentIndex;
     }
 
-    async handleChatCompletion(c: Context): Promise<Response | void> {
+    private isAuthErrorMessage(message: string): boolean {
+        return message.includes('AUTH_EXPIRED') || message.includes('Unauthorized (Please Login)');
+    }
+
+    async handleChatCompletion(c: Context, payload?: any): Promise<Response | void> {
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
             return c.json({ error: 'No Qwen providers configured' }, 500);
@@ -94,57 +121,118 @@ export class MultiQwenProvider implements LLMProvider {
 
         let lastError: any = null;
         let triedCount = 0;
+        const startIndex = this.currentIndex;
+        const errorMessages: string[] = [];
+        let authExpiredCount = 0;
+        let rateLimitedCount = 0;
+        let quotaBlockedCount = 0;
 
-        // Try rotating through all providers
         for (let attempt = 0; attempt < availableProviders; attempt++) {
-            const providerIndex = (this.currentIndex + attempt) % availableProviders;
+            const providerIndex = (startIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
-            const status = provider.getStatus();
+            const status = provider.getRuntimeStatus();
 
-            // 1. Skip if provider is dead or initializing (unless it's the only one, then maybe wait?)
-            if (status.status === 'error' && attempt < availableProviders - 1) {
+            if (status.status === 'error' && status.lastError && this.isAuthErrorMessage(status.lastError)) {
+                authExpiredCount++;
+                errorMessages.push(status.lastError);
                 continue;
             }
 
-            // 2. SMART ROUTING: Check local quota BEFORE making request
-            // If we know this provider is out of quota, don't even try it.
-            if (!quotaManager.checkQuota(status.id, 'chat')) {
-                // Only log warning if we are skipping. If all are skipped, we'll return error at end.
-                // logger.debug(`Skipping provider ${status.id} due to local quota limit.`);
+            // Circuit-breaker cooldown: temporarily skip known failing provider.
+            if (!provider.canAttempt() && attempt < availableProviders - 1) {
+                continue;
+            }
+
+            const quotaResult = await quotaManager.checkQuota(status.id, 'chat');
+            if (!quotaResult.allowed) {
+                quotaBlockedCount++;
                 continue;
             }
 
             triedCount++;
 
             try {
-                // Update sticky index for next request
                 if (attempt === 0) {
-                    this.currentIndex = (this.currentIndex + 1) % availableProviders;
+                    this.currentIndex = (providerIndex + 1) % availableProviders;
                 }
 
                 logger.debug(`Attempting request with provider: ${status.id} (Attempt ${attempt + 1})`);
-                
-                return await provider.handleChatCompletion(c);
+                return await provider.handleChatCompletion(c, payload);
             } catch (err: any) {
                 lastError = err;
+                const message = String(err?.message || 'Unknown error');
+                errorMessages.push(message);
+                if (this.isAuthErrorMessage(message)) {
+                    authExpiredCount++;
+                }
+                if (message.includes('Rate limited')) {
+                    rateLimitedCount++;
+                }
                 logger.warn(`Provider ${status.id} failed, trying next... Error: ${err.message}`);
             }
         }
 
         if (triedCount === 0) {
-            return c.json({ 
-                error: 'Quota Exceeded', 
-                message: 'All providers have reached their daily or rate limits locally.' 
-            }, 429);
+            if (authExpiredCount === availableProviders) {
+                return c.json(
+                    {
+                        error: 'All providers unauthorized',
+                        details: 'All accounts require re-login in admin console.'
+                    },
+                    401
+                );
+            }
+            if (quotaBlockedCount === availableProviders) {
+                return c.json(
+                    {
+                        error: 'All providers rate limited',
+                        details: 'All accounts are currently rate limited.'
+                    },
+                    429
+                );
+            }
+            return c.json(
+                {
+                    error: 'No available providers',
+                    details: 'Providers are either unauthorized, cooling down, or rate limited.',
+                    errors: errorMessages
+                },
+                503
+            );
         }
 
-        return c.json({ 
-            error: 'All providers failed', 
-            details: lastError?.message 
-        }, 500);
+        if (authExpiredCount === triedCount && triedCount > 0) {
+            return c.json(
+                {
+                    error: 'All providers unauthorized',
+                    details: 'All accounts require re-login in admin console.'
+                },
+                401
+            );
+        }
+
+        if (rateLimitedCount === triedCount && triedCount > 0) {
+            return c.json(
+                {
+                    error: 'All providers rate limited',
+                    details: 'All accounts are currently rate limited.'
+                },
+                429
+            );
+        }
+
+        return c.json(
+            {
+                error: 'All providers failed',
+                details: lastError?.message,
+                attempts: triedCount,
+                errors: errorMessages
+            },
+            500
+        );
     }
 
-    async handleWebSearch(c: Context): Promise<Response | void> {
+    async handleWebSearch(c: Context, payload?: any): Promise<Response | void> {
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
             return c.json({ error: 'No Qwen providers configured' }, 500);
@@ -152,18 +240,27 @@ export class MultiQwenProvider implements LLMProvider {
 
         let lastError: any = null;
         let triedCount = 0;
+        const startIndex = this.currentIndex;
+        let authExpiredCount = 0;
+        let quotaBlockedCount = 0;
 
         for (let attempt = 0; attempt < availableProviders; attempt++) {
-            const providerIndex = (this.currentIndex + attempt) % availableProviders;
+            const providerIndex = (startIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
-            const status = provider.getStatus();
+            const status = provider.getRuntimeStatus();
 
-            if (status.status === 'error' && attempt < availableProviders - 1) {
+            if (status.status === 'error' && status.lastError && this.isAuthErrorMessage(status.lastError)) {
+                authExpiredCount++;
                 continue;
             }
 
-            // SMART ROUTING CHECK
-            if (!quotaManager.checkQuota(status.id, 'search')) {
+            if (!provider.canAttempt() && attempt < availableProviders - 1) {
+                continue;
+            }
+
+            const quotaResult = await quotaManager.checkQuota(status.id, 'search');
+            if (!quotaResult.allowed) {
+                quotaBlockedCount++;
                 continue;
             }
 
@@ -171,25 +268,43 @@ export class MultiQwenProvider implements LLMProvider {
 
             try {
                 if (attempt === 0) {
-                    this.currentIndex = (this.currentIndex + 1) % availableProviders;
+                    this.currentIndex = (providerIndex + 1) % availableProviders;
                 }
-                return await provider.handleWebSearch(c);
+                return await provider.handleWebSearch(c, payload);
             } catch (err: any) {
                 lastError = err;
-                logger.warn(`Search failed with provider ${status.id}, trying next...`);
+                logger.warn(`Search failed with provider ${status.id}, trying next... Error: ${err.message}`);
             }
         }
 
         if (triedCount === 0) {
-            return c.json({ 
-                error: 'Quota Exceeded', 
-                message: 'All search providers have reached their limits.' 
-            }, 429);
+            if (authExpiredCount === availableProviders) {
+                return c.json(
+                    {
+                        error: 'All providers unauthorized',
+                        details: 'All accounts require re-login in admin console.'
+                    },
+                    401
+                );
+            }
+            if (quotaBlockedCount === availableProviders) {
+                return c.json(
+                    {
+                        error: 'All providers rate limited',
+                        details: 'All accounts are currently rate limited.'
+                    },
+                    429
+                );
+            }
+            return c.json(
+                {
+                    error: 'No available providers',
+                    details: 'Search providers are either unauthorized, cooling down, or rate limited.'
+                },
+                503
+            );
         }
 
         return c.json({ error: 'All search providers failed', details: lastError?.message }, 500);
     }
 }
-
-
-

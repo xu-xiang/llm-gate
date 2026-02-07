@@ -15,5 +15,15 @@ CREATE TABLE IF NOT EXISTS global_monitor (
     value INTEGER DEFAULT 0
 );
 
+-- 按分钟聚合审计日志：低写入成本地记录访问结果和限流命中
+CREATE TABLE IF NOT EXISTS request_audit_minute (
+    minute_bucket TEXT NOT NULL, -- YYYY-MM-DDTHH:MM (Beijing)
+    provider_id TEXT NOT NULL,
+    kind TEXT NOT NULL,          -- 'chat' or 'search'
+    outcome TEXT NOT NULL,       -- 'success' | 'limited:daily' | 'limited:rpm' | 'error:*'
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (minute_bucket, provider_id, kind, outcome)
+);
+
 -- 初始化启动时间（如果不存在）
 INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch());

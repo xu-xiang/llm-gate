@@ -21,6 +21,9 @@ const ConfigSchema = z.object({
             rpm: z.number().default(0)
         }).default({ daily: 0, rpm: 0 })
     }).default({ chat: { daily: 2000, rpm: 60 }, search: { daily: 0, rpm: 0 } }),
+    audit: z.object({
+        success_logs: z.boolean().default(false)
+    }).default({ success_logs: false }),
     providers: z.object({
         qwen: z.object({
             enabled: z.boolean().default(true),
@@ -64,6 +67,8 @@ export function loadConfig(env: any): AppConfig {
     if (env.CHAT_RPM_LIMIT) baseConfig.quota.chat.rpm = parseInt(env.CHAT_RPM_LIMIT, 10);
     if (env.SEARCH_DAILY_LIMIT) baseConfig.quota.search.daily = parseInt(env.SEARCH_DAILY_LIMIT, 10);
     if (env.SEARCH_RPM_LIMIT) baseConfig.quota.search.rpm = parseInt(env.SEARCH_RPM_LIMIT, 10);
+    if (!baseConfig.audit) baseConfig.audit = {};
+    if (env.AUDIT_SUCCESS_LOG) baseConfig.audit.success_logs = env.AUDIT_SUCCESS_LOG === 'true';
 
     try {
         return ConfigSchema.parse(baseConfig);

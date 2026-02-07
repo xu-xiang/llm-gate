@@ -1,7 +1,7 @@
 import { Context } from 'hono';
 
 export interface LLMProvider {
-    handleChatCompletion(c: Context): Promise<Response | void>;
-    handleWebSearch(c: Context): Promise<Response | void>;
+    handleChatCompletion(c: Context, payload?: any): Promise<Response | void>;
+    handleWebSearch(c: Context, payload?: any): Promise<Response | void>;
     initialize(): Promise<void>;
 }

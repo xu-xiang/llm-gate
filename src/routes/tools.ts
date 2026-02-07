@@ -6,7 +6,8 @@ export function createToolsRouter(qwenProvider?: LLMProvider) {
 
     app.post('/web_search', async (c) => {
         if (qwenProvider) {
-            return qwenProvider.handleWebSearch(c);
+            const body = await c.req.json();
+            return qwenProvider.handleWebSearch(c, body);
         }
 
         return c.json({

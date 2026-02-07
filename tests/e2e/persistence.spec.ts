@@ -2,12 +2,16 @@ import { test, expect } from '@playwright/test';
 
 const API_KEY = 'your-secret-token';
 const BASE_URL = 'http://localhost:8787';
-const ADMIN_UI = `${BASE_URL}/${API_KEY}/ui`;
+const ADMIN_UI = `${BASE_URL}/ui`;
 
 test.describe('LLM Gateway Admin UI Persistence Tests', () => {
   
   test.beforeEach(async ({ page }) => {
     await page.goto(ADMIN_UI, { timeout: 60000 });
+    await page.evaluate((key) => {
+      localStorage.setItem('llm_gate_key', key);
+    }, API_KEY);
+    await page.reload();
     await page.waitForSelector('text=LLM Gateway', { timeout: 10000 });
   });
 

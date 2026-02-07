@@ -14,7 +14,7 @@
 - **🏊‍♂️ 多账号池化 (Account Pooling)**：支持同时绑定多个 Qwen 账号，通过智能轮询实现配额扩容与故障自动转移。
 - **🔐 分布式并发控制**：引入 KV 分布式锁机制，完美解决 Serverless 环境下多实例并发刷新 Token 的 Race Condition 问题。
 - **📺 极简 Web 控制台**：
-  - **路径隐藏**：管理后台隐藏在 `/<API_KEY>/ui` 路径下，确保安全。
+  - **后台鉴权**：管理后台固定为 `/admin/ui`（或 `/ui`），通过 `API_KEY` 登录后访问。
   - **动态管理**：无需修改代码，直接在网页端添加、删除、重命名账号。
   - **实时监控**：可视化展示各账号状态、延迟、每日配额 (Daily) 及每分钟请求数 (RPM)。
 - **🛠️ 流式传输优化**：内置 SSE Transformer，自动处理 Qwen API 偶尔产生的重复字符（SSE De-duplication），确保终端显示平滑。
@@ -46,18 +46,19 @@
 
 | 变量名 | 是否必填 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| **`API_KEY`** | **是** | 无 | **访问密码**。决定了 API 调用权限及管理面路径 `/<API_KEY>/ui`。 |
+| **`API_KEY`** | **是** | 无 | **访问密码**。用于 API Bearer 鉴权和管理后台登录。 |
 | **`LOG_LEVEL`** | 否 | `INFO` | 日志详细程度: `DEBUG`, `INFO`, `WARN`, `ERROR`。 |
 | **`CHAT_DAILY_LIMIT`**| 否 | `2000` | 每个账号默认每日聊天额度。 |
 | **`CHAT_RPM_LIMIT`** | 否 | `60` | 每个账号默认每分钟请求频率。 |
 | **`MODEL_MAPPINGS`** | 否 | `{"research-model-v1": "coder-model"}` | 模型名称映射 (JSON 格式)。 |
 | **`QWEN_CREDS_JSON`** | 否 | 无 | **自动播种**。可填入 `oauth_creds.json` 内容，首次启动自动写入 KV。 |
+| **`AUDIT_SUCCESS_LOG`** | 否 | `false` | 是否记录成功请求到 `Recent Audit`。默认关闭可节省 D1 写入额度。 |
 
 ---
 
 ## 🖥️ 使用指引
 
-1.  **管理后台**：访问 `https://<your-domain>/<API_KEY>/ui`。
+1.  **管理后台**：访问 `https://<your-domain>/ui`（或 `https://<your-domain>/admin/ui`），输入 `API_KEY` 登录。
 2.  **添加账号**：在后台点击 `Add Account`，按提示扫码或登录授权即可。
 3.  **API 调用**：
     - **Base URL**: `https://<your-domain>/v1`

@@ -4,9 +4,10 @@ import { MultiQwenProvider } from '../providers/qwen/multiProvider';
 import { QwenAuthManager, generateCodeChallenge, generateCodeVerifier } from '../providers/qwen/auth';
 import { monitor } from '../core/monitor';
 import { logger } from '../core/logger';
+import { quotaManager } from '../core/quota';
 import crypto from 'node:crypto';
 
-export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider, clientId: string, apiKey: string) {
+export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider | undefined, clientId: string, apiKey: string) {
     const app = new Hono();
 
     app.use('/api/*', async (c, next) => {
@@ -58,6 +59,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         <div class="header"><a href="#" class="logo"><span>⚡</span> LLM Gateway</a><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button><button class="btn btn-danger" onclick="logout()">Logout</button></div></div>
         <div class="stats-grid" id="stats-grid"></div>
         <div class="card"><h2>Provider Pool</h2><div style="overflow-x:auto"><table><thead><tr><th>Account</th><th>Status</th><th>Latency</th><th>Usage</th><th>RPM</th><th>Actions</th></tr></thead><tbody id="provider-list"></tbody></table></div></div>
+        <div class="card"><h2>Recent Audit (Minute Aggregate)</h2><div style="overflow-x:auto"><table><thead><tr><th>Minute</th><th>Provider</th><th>Kind</th><th>Outcome</th><th>Count</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
     </div>
     <div id="authModal" class="modal"><div class="modal-content"><h3 id="modalTitle">Connect Account</h3><div id="step1"><input type="text" id="accountAlias" placeholder="Name..." style="width:100%; padding:10px; margin-bottom:15px; border:1px solid var(--border); border-radius:6px"><button class="btn btn-primary" style="width:100%" onclick="startAuthFlow()">Next</button></div><div id="step2" style="display:none"><p>1. Open <a id="authLink" href="#" target="_blank">Login Page ↗</a></p><div id="userCode" class="code-display"></div><p style="font-size:12px; color:var(--subtext)">Waiting for approval...</p></div><button class="btn btn-danger" style="width:100%; margin-top:10px" onclick="closeModal()">Cancel</button></div></div>
     <div id="renameModal" class="modal"><div class="modal-content"><h3>Rename Account</h3><input type="text" id="renameInput" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:6px"><div style="display:flex; gap:10px; margin-top:20px"><button class="btn btn-outline" style="flex:1" onclick="closeRenameModal()">Cancel</button><button class="btn btn-primary" style="flex:1" id="renameBtn">Save</button></div></div></div>
@@ -78,6 +80,8 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
             document.getElementById('stats-grid').innerHTML = \`
                 <div class="stat-item"><div class="stat-label">Uptime</div><div class="stat-value">\${Math.floor(m.uptime/3600)}h \${Math.floor(m.uptime%3600/60)}m</div></div>
                 <div class="stat-item"><div class="stat-label">Requests</div><div class="stat-value">\${(m.chat.total+m.search.total).toLocaleString()}</div></div>
+                <div class="stat-item"><div class="stat-label">Rate Limited</div><div class="stat-value">\${(m.chat.rateLimited+m.search.rateLimited).toLocaleString()}</div></div>
+                <div class="stat-item"><div class="stat-label">Errors</div><div class="stat-value">\${(m.chat.error+m.search.error).toLocaleString()}</div></div>
                 <div class="stat-item"><div class="stat-label">Active Pool</div><div class="stat-value" style="color:var(--success)">\${active}/\${data.qwen.providers.length}</div></div>\`;
             document.getElementById('provider-list').innerHTML = data.qwen.providers.map(p => {
                 const daily = p.quota?.chat?.daily || {used:0, limit:2000, percent:0}; const rpm = p.quota?.chat?.rpm || {used:0, limit:60, percent:0};
@@ -94,6 +98,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
                     </div></td>
                 </tr>\`;
             }).join('');
+            document.getElementById('audit-list').innerHTML = (data.audit || []).map(a => \`<tr><td>\${a.minute_bucket}</td><td style="font-family:monospace">\${a.provider_id}</td><td>\${a.kind}</td><td>\${a.outcome}</td><td>\${a.count}</td></tr>\`).join('') || '<tr><td colspan=\"5\" style=\"color:var(--subtext)\">No audit data yet</td></tr>';
         } catch (e) { if(e.message !== 'Unauthorized') console.error(e); }
     }
     function showModal(id) { const m=document.getElementById(id); m.style.display='flex'; setTimeout(()=>m.classList.add('show'),10); }
@@ -119,7 +124,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     async function deleteProvider(id) { if(confirm('Delete?')) { await apiFetch('/api/providers?id=' + encodeURIComponent(id), { method: 'DELETE' }); loadData(); } }
     function closeModal() { if(pollInterval) clearInterval(pollInterval); hideModal('authModal'); }
     function closeRenameModal() { hideModal('renameModal'); }
-    if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 3000); } else { showLogin(); }
+    if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 5000); } else { showLogin(); }
 </script></body></html>`;
         return c.html(html);
     });
@@ -127,10 +132,12 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
     // 3. API 接口 (已更新为异步)
     app.get('/api/stats', async (c) => {
         const stats = await monitor.getStats();
-        const providers = await qwenProvider.getAllProviderStatus();
+        const providers = qwenProvider ? await qwenProvider.getAllProviderStatus() : [];
+        const audit = await quotaManager.getRecentAudit(30);
         return c.json({
             monitor: stats,
-            qwen: { currentIndex: qwenProvider.getCurrentIndex(), providers: providers }
+            qwen: { currentIndex: qwenProvider?.getCurrentIndex() ?? 0, providers: providers },
+            audit
         });
     });
 
@@ -156,7 +163,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
             const saveId = target_id || `qwen_creds_${crypto.randomUUID().substring(0, 8)}.json`;
             await storage.set(saveId, result);
             await storage.delete(`pending_${device_code}`);
-            await qwenProvider.addProvider(saveId);
+            await qwenProvider?.addProvider(saveId);
             return c.json({ status: 'success', id: saveId });
         } catch (e: any) { return c.json({ status: 'error', message: e.message }); }
     });
@@ -165,11 +172,13 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         const id = c.req.query('id') || '';
         if (!id) return c.json({ error: 'Missing id' }, 400);
         const { alias } = await c.req.json();
-        const data = await storage.get(id);
+        const altId = id.startsWith('./') ? id.substring(2) : `./${id}`;
+        const data = (await storage.get(id)) || (await storage.get(altId));
         if (data) {
             data.alias = alias;
             await storage.set(id, data);
-            await qwenProvider.addProvider(id);
+            await storage.delete(altId);
+            await qwenProvider?.addProvider(id);
         }
         return c.json({ success: true });
     });
@@ -178,7 +187,9 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         const id = c.req.query('id') || '';
         if (!id) return c.json({ error: 'Missing id' }, 400);
         await storage.delete(id);
-        await qwenProvider.removeProvider(id);
+        if (id.startsWith('./')) await storage.delete(id.substring(2));
+        else await storage.delete(`./${id}`);
+        await qwenProvider?.removeProvider(id);
         return c.json({ success: true });
     });
 

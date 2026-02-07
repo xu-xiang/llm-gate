@@ -33,8 +33,12 @@ export class QwenAuthManager {
 
     constructor(storage: IStorage, credsKey: string, clientId: string) {
         this.storage = storage;
-        this.credsKey = credsKey;
+        this.credsKey = credsKey.startsWith('./') ? credsKey.substring(2) : credsKey;
         this.clientId = clientId;
+    }
+
+    private getCandidateKeys(): string[] {
+        return this.credsKey.startsWith('./') ? [this.credsKey] : [this.credsKey, `./${this.credsKey}`];
     }
 
     public clearCache() {
@@ -43,10 +47,12 @@ export class QwenAuthManager {
 
     private async loadCredentials(): Promise<QwenCredentials | null> {
         try {
-            const data = await this.storage.get(this.credsKey);
-            if (data && data.access_token) {
-                this.memoryCredentials = data;
-                return data;
+            for (const key of this.getCandidateKeys()) {
+                const data = await this.storage.get(key);
+                if (data && data.access_token) {
+                    this.memoryCredentials = data;
+                    return data;
+                }
             }
         } catch (error) {
             logger.warn(`Failed to read credentials from storage key ${this.credsKey}:`, error);
@@ -57,6 +63,11 @@ export class QwenAuthManager {
     private async saveCredentials(creds: QwenCredentials): Promise<void> {
         try {
             await this.storage.set(this.credsKey, creds);
+            if (this.credsKey.startsWith('./')) {
+                await this.storage.delete(this.credsKey.substring(2));
+            } else {
+                await this.storage.delete(`./${this.credsKey}`);
+            }
             this.memoryCredentials = creds;
             logger.info(`Credentials saved successfully for ${this.credsKey}.`);
         } catch (error) {
@@ -167,7 +178,13 @@ export class QwenAuthManager {
                  throw new Error(`HTTP ${response.status}: ${errorText}`);
              }
 
-             const data = await response.json() as any;
+             let data: any;
+             try {
+                 data = await response.json() as any;
+             } catch (e) {
+                 logger.error(`Token refresh response is not valid JSON for ${this.credsKey}. Manual login required.`);
+                 throw new Error('AUTH_EXPIRED');
+             }
              const creds: QwenCredentials = {
                 access_token: data.access_token,
                 refresh_token: data.refresh_token || refreshToken,
@@ -201,7 +218,7 @@ export class QwenAuthManager {
 
     // FIX: Fallback to file ID if alias is missing
     public getCachedAlias(): string | undefined {
-        return this.memoryCredentials?.alias || this.credsKey.replace('qwen_creds_', '').replace('.json', '');
+        return this.memoryCredentials?.alias || this.credsKey.replace('qwen_creds_', '').replace('oauth_creds_', '').replace('.json', '');
     }
 
     public async checkTokenValidity(creds: QwenCredentials): Promise<boolean> {
@@ -233,7 +250,9 @@ export class QwenAuthManager {
                 clearTimeout(timeoutId);
             }
         } catch (e) {
-            return true;
+            // Any network/protocol/SSL failure during validation should be treated
+            // as invalid, so provider status won't be reported as active incorrectly.
+            return false;
         }
     }
 

@@ -33,15 +33,15 @@ export class Monitor {
                 uptime: now - uptimeStart,
                 chat: {
                     total: statsMap['chat_total'] || 0,
-                    success: 0, 
-                    error: 0,
-                    rateLimited: 0
+                    success: statsMap['chat_success'] || 0,
+                    error: statsMap['chat_error'] || 0,
+                    rateLimited: statsMap['chat_rate_limited'] || 0
                 },
                 search: {
                     total: statsMap['search_total'] || 0,
-                    success: 0,
-                    error: 0,
-                    rateLimited: 0
+                    success: statsMap['search_success'] || 0,
+                    error: statsMap['search_error'] || 0,
+                    rateLimited: statsMap['search_rate_limited'] || 0
                 }
             };
         } catch (e) {

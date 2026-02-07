@@ -26,11 +26,7 @@ export function createChatRouter(qwenProvider?: LLMProvider, modelMappings: Reco
                            model.startsWith('qwen3');
 
         if (qwenProvider && isQwenModel) {
-            // Note: We need to pass the updated body if we modified it
-            // However, our Provider currently reads c.req.json() again.
-            // In Hono, c.req.json() can only be read once unless we use a middleware to buffer it.
-            // For now, let's assume the Provider will use the model from the body it reads.
-            return qwenProvider.handleChatCompletion(c);
+            return qwenProvider.handleChatCompletion(c, body);
         }
 
         return c.json({
