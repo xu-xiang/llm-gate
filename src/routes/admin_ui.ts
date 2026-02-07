@@ -38,7 +38,7 @@ export function renderAdminPage(): string {
 <body>
     <div id="loginOverlay"><div class="card" style="width:350px; text-align:center"><h3>🔐 Unlock Console</h3><input type="password" id="loginKey" placeholder="API_KEY" style="width:100%; padding:12px; margin:15px 0; border:1px solid var(--border); border-radius:6px"><button class="btn btn-primary" style="width:100%" onclick="doLogin()">Unlock</button></div></div>
     <div class="container" id="mainApp" style="display:none">
-        <div class="header"><a href="#" class="logo"><span>⚡</span> LLM Gateway</a><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button><button class="btn btn-danger" onclick="logout()">Logout</button></div></div>
+        <div class="header"><a href="#" class="logo"><span>⚡</span> LLM Gateway</a><div style="display:flex; gap:8px"><button class="btn btn-outline" onclick="loadData()">Refresh</button><button class="btn btn-outline" id="autoRefreshBtn" onclick="toggleAutoRefresh()">Auto Refresh: OFF</button><button class="btn btn-primary" onclick="showAddModal()">+ Add Account</button><button class="btn btn-danger" onclick="logout()">Logout</button></div></div>
         <div class="stats-grid" id="stats-grid"></div>
         <div class="card"><h2>Provider Pool</h2><div style="overflow-x:auto"><table><thead><tr><th>Account</th><th>Status</th><th>Latency</th><th>Usage</th><th>RPM</th><th>Actions</th></tr></thead><tbody id="provider-list"></tbody></table></div></div>
         <div class="card"><h2>Recent Audit (Minute Aggregate)</h2><div style="overflow-x:auto"><table><thead><tr><th>Minute</th><th>Provider</th><th>Kind</th><th>Outcome</th><th>Count</th></tr></thead><tbody id="audit-list"></tbody></table></div></div>
@@ -46,15 +46,40 @@ export function renderAdminPage(): string {
     <div id="authModal" class="modal"><div class="modal-content"><h3 id="modalTitle">Connect Account</h3><div id="step1"><input type="text" id="accountAlias" placeholder="Name..." style="width:100%; padding:10px; margin-bottom:15px; border:1px solid var(--border); border-radius:6px"><button class="btn btn-primary" style="width:100%" onclick="startAuthFlow()">Next</button></div><div id="step2" style="display:none"><p>1. Open <a id="authLink" href="#" target="_blank">Login Page ↗</a></p><div id="userCode" class="code-display"></div><p style="font-size:12px; color:var(--subtext)">Waiting for approval...</p></div><button class="btn btn-danger" style="width:100%; margin-top:10px" onclick="closeModal()">Cancel</button></div></div>
     <div id="renameModal" class="modal"><div class="modal-content"><h3>Rename Account</h3><input type="text" id="renameInput" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:6px"><div style="display:flex; gap:10px; margin-top:20px"><button class="btn btn-outline" style="flex:1" onclick="closeRenameModal()">Cancel</button><button class="btn btn-primary" style="flex:1" id="renameBtn">Save</button></div></div></div>
 <script>
+    let autoRefreshTimer = null;
+    const AUTO_REFRESH_KEY = 'llm_gate_auto_refresh';
     let pollInterval; const getStoredKey = () => localStorage.getItem('llm_gate_key');
     const authHeaders = () => ({ 'X-Admin-Key': getStoredKey(), 'Content-Type': 'application/json' });
+    const isAutoRefreshEnabled = () => localStorage.getItem(AUTO_REFRESH_KEY) === 'true';
+    function updateAutoRefreshButton() {
+        const btn = document.getElementById('autoRefreshBtn');
+        if (!btn) return;
+        btn.textContent = isAutoRefreshEnabled() ? 'Auto Refresh: ON' : 'Auto Refresh: OFF';
+    }
+    function stopAutoRefresh() {
+        if (autoRefreshTimer) {
+            clearInterval(autoRefreshTimer);
+            autoRefreshTimer = null;
+        }
+    }
+    function startAutoRefresh() {
+        stopAutoRefresh();
+        autoRefreshTimer = setInterval(loadData, 15000);
+    }
+    function toggleAutoRefresh() {
+        const next = !isAutoRefreshEnabled();
+        localStorage.setItem(AUTO_REFRESH_KEY, next ? 'true' : 'false');
+        updateAutoRefreshButton();
+        if (next) startAutoRefresh();
+        else stopAutoRefresh();
+    }
     async function apiFetch(path, options = {}) {
         const res = await fetch('/admin' + path, { ...options, headers: { ...authHeaders(), ...options.headers } });
         if (res.status === 401) { showLogin(); throw new Error('Unauthorized'); } return res;
     }
     function showLogin() { document.getElementById('loginOverlay').style.display='flex'; document.getElementById('mainApp').style.display='none'; }
     function doLogin() { const k=document.getElementById('loginKey').value; if(!k) return; localStorage.setItem('llm_gate_key', k); document.getElementById('loginOverlay').style.display='none'; document.getElementById('mainApp').style.display='block'; loadData(); }
-    function logout() { localStorage.removeItem('llm_gate_key'); location.reload(); }
+    function logout() { localStorage.removeItem('llm_gate_key'); stopAutoRefresh(); location.reload(); }
     async function loadData() {
         try {
             const res = await apiFetch('/api/stats'); const data = await res.json();
@@ -109,6 +134,13 @@ export function renderAdminPage(): string {
     async function deleteProvider(id) { if(confirm('Delete?')) { await apiFetch('/api/providers?id=' + encodeURIComponent(id), { method: 'DELETE' }); loadData(); } }
     function closeModal() { if(pollInterval) clearInterval(pollInterval); hideModal('authModal'); }
     function closeRenameModal() { hideModal('renameModal'); }
-    if (getStoredKey()) { document.getElementById('mainApp').style.display='block'; loadData(); setInterval(loadData, 15000); } else { showLogin(); }
+    if (getStoredKey()) {
+        document.getElementById('mainApp').style.display='block';
+        updateAutoRefreshButton();
+        loadData();
+        if (isAutoRefreshEnabled()) startAutoRefresh();
+    } else {
+        showLogin();
+    }
 </script></body></html>`;
 }
