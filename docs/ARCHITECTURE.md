@@ -23,6 +23,9 @@
   - OAuth token lifecycle
   - Multi-account routing/failover
   - Upstream request adaptation
+- `src/providers/router.ts`
+  - Provider registry-style router
+  - Keeps `/v1/chat` and `/v1/tools` decoupled from concrete providers
 - `src/core/`
   - `quota.ts`: daily + RPM accounting and audit aggregation
   - `providerRegistry.ts`: stable provider ID/alias persistence
@@ -43,3 +46,10 @@
 5. `QuotaManager` writes daily + minute aggregates
 6. Admin UI reads D1 aggregates for usage/audit
 
+## Provider Evolution (Gemini Reserved)
+- Gemini is intentionally not wired in this version.
+- Future provider integration should only require:
+  - New provider module under `src/providers/<name>/`
+  - Registration in `createApp()`
+  - Model matching rule
+- No route-level rewrite should be needed when adding providers.
