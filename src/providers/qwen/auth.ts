@@ -210,8 +210,6 @@ export class QwenAuthManager {
             if (creds && creds.refresh_token !== oldRefreshToken) {
                 return creds;
             }
-            const lockExists = await this.storage.get(`lock:token_refresh:${this.credsKey}`);
-            if (!lockExists && i > 2) break; 
         }
         throw new Error('Timeout or failure waiting for token update');
     }
@@ -221,7 +219,7 @@ export class QwenAuthManager {
         return this.memoryCredentials?.alias || this.credsKey.replace('qwen_creds_', '').replace('oauth_creds_', '').replace('.json', '');
     }
 
-    public async checkTokenValidity(creds: QwenCredentials): Promise<boolean> {
+    public async probeTokenStatus(creds: QwenCredentials): Promise<number | null> {
         try {
             const baseUrl = creds.resource_url || 'portal.qwen.ai';
             let normalizedUrl = baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`;
@@ -245,15 +243,18 @@ export class QwenAuthManager {
                     }),
                     signal: controller.signal
                 });
-                return response.status === 200;
+                return response.status;
             } finally {
                 clearTimeout(timeoutId);
             }
         } catch (e) {
-            // Any network/protocol/SSL failure during validation should be treated
-            // as invalid, so provider status won't be reported as active incorrectly.
-            return false;
+            return null;
         }
+    }
+
+    public async checkTokenValidity(creds: QwenCredentials): Promise<boolean> {
+        const status = await this.probeTokenStatus(creds);
+        return status === 200;
     }
 
     public async getValidCredentials(): Promise<QwenCredentials> {

@@ -102,7 +102,8 @@ export class QwenProvider implements LLMProvider {
             this.providerStatus.alias = creds.alias || this.authManager.getCachedAlias();
 
             logger.info(`Verifying token for ${this.credsPath}...`);
-            const isValid = await this.authManager.checkTokenValidity(creds);
+            const initialStatus = await this.authManager.probeTokenStatus(creds);
+            const isValid = initialStatus === 200;
 
             if (isValid) {
                 this.providerStatus.status = 'active';
@@ -112,9 +113,25 @@ export class QwenProvider implements LLMProvider {
                 logger.warn(`Token invalid for ${this.credsPath}. Attempting refresh...`);
                 const refreshed = await this.authManager.refreshToken(creds.refresh_token);
                 this.providerStatus.alias = refreshed.alias || this.providerStatus.alias;
-                this.providerStatus.status = 'active';
-                this.providerStatus.lastError = undefined;
-                this.retryAfterTs = 0;
+                const refreshedStatus = await this.authManager.probeTokenStatus(refreshed);
+
+                if (refreshedStatus === 200) {
+                    this.providerStatus.status = 'active';
+                    this.providerStatus.lastError = undefined;
+                    this.retryAfterTs = 0;
+                } else if (refreshedStatus === 401) {
+                    this.providerStatus.status = 'error';
+                    this.providerStatus.lastError = 'Unauthorized (Please Login)';
+                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
+                } else if (refreshedStatus === 429) {
+                    this.providerStatus.status = 'error';
+                    this.providerStatus.lastError = 'Rate limited';
+                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
+                } else {
+                    this.providerStatus.status = 'error';
+                    this.providerStatus.lastError = `Token probe failed (${refreshedStatus ?? 'network'})`;
+                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
+                }
             }
         } catch (e: any) {
             logger.error(`QwenProvider initialization failed for ${this.credsPath}`, e);
