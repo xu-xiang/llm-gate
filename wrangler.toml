@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-02-05"
 compatibility_flags = ["nodejs_compat"]
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [[kv_namespaces]]
 binding = "AUTH_STORE"
 # For first-time setup on a new account, run:
@@ -24,3 +27,6 @@ CHAT_DAILY_LIMIT = "2000"
 CHAT_RPM_LIMIT = "60"
 PROVIDER_SCAN_SECONDS = "60"
 PROVIDER_FULL_KV_SCAN_MINUTES = "0"
+ALERT_ENABLED = "true"
+ALERT_WEBHOOK_TYPE = "dingtalk"
+ALERT_QUOTA_THRESHOLD_PERCENT = "80"

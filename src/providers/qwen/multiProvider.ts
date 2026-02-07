@@ -34,7 +34,9 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     async initialize() {
-        await this.forceRescan('full');
+        // Do not hard-depend on KV full scan at startup.
+        // KV list quota may be exhausted; D1 registry-first must still keep service available.
+        await this.forceRescan('light');
     }
 
     private normalizeKey(key: string): string {
@@ -48,18 +50,22 @@ export class MultiQwenProvider implements LLMProvider {
         let kvDiscovered: string[] = [];
         const needsFullScan = mode === 'full' || (registryIds.length === 0 && this.staticAuthFiles.length === 0);
         if (needsFullScan) {
-            const [dynamicQwen, dynamicQwenLegacy, dynamicOauth, dynamicOauthLegacy] = await Promise.all([
-                this.storage.list('qwen_creds_'),
-                this.storage.list('./qwen_creds_'),
-                this.storage.list('oauth_creds_'),
-                this.storage.list('./oauth_creds_')
-            ]);
-            kvDiscovered = [
-                ...dynamicQwen,
-                ...dynamicQwenLegacy,
-                ...dynamicOauth,
-                ...dynamicOauthLegacy
-            ];
+            try {
+                const [dynamicQwen, dynamicQwenLegacy, dynamicOauth, dynamicOauthLegacy] = await Promise.all([
+                    this.storage.list('qwen_creds_'),
+                    this.storage.list('./qwen_creds_'),
+                    this.storage.list('oauth_creds_'),
+                    this.storage.list('./oauth_creds_')
+                ]);
+                kvDiscovered = [
+                    ...dynamicQwen,
+                    ...dynamicQwenLegacy,
+                    ...dynamicOauth,
+                    ...dynamicOauthLegacy
+                ];
+            } catch (e: any) {
+                logger.warn(`[ProviderPool] KV full scan skipped: ${e?.message || e}`);
+            }
         }
 
         const discoveredKeys = [

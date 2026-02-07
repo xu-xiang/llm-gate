@@ -4,6 +4,7 @@ import { loadConfig } from './config';
 import { KVStorage } from './core/storage';
 import { quotaManager } from './core/quota';
 import { monitor } from './core/monitor';
+import { runBusinessAlerts } from './core/alerts';
 
 export interface Env {
   AUTH_STORE: KVNamespace;
@@ -22,6 +23,10 @@ export interface Env {
   AUDIT_SUCCESS_LOG?: string;
   PROVIDER_SCAN_SECONDS?: string;
   PROVIDER_FULL_KV_SCAN_MINUTES?: string;
+  ALERT_ENABLED?: string;
+  ALERT_WEBHOOK_URL?: string;
+  ALERT_WEBHOOK_TYPE?: string;
+  ALERT_QUOTA_THRESHOLD_PERCENT?: string;
 }
 
 let appInstance: any;
@@ -113,4 +118,11 @@ export default {
       return new Response(`Startup Failed: ${e.message}`, { status: 500 });
     }
   },
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    try {
+      await runBusinessAlerts(env);
+    } catch (e: any) {
+      console.error('[SCHEDULED ALERT ERROR]', e?.message || e);
+    }
+  }
 };

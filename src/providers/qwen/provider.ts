@@ -246,7 +246,8 @@ export class QwenProvider implements LLMProvider {
             this.retryAfterTs = Date.now() + this.errorCooldownMs;
 
             if (!failureRecorded) {
-                c.executionCtx.waitUntil(quotaManager.recordFailure(this.providerStatus.id, 'chat', 'runtime_error'));
+                const reason = error.message === 'AUTH_EXPIRED' ? 'auth_expired' : 'runtime_error';
+                c.executionCtx.waitUntil(quotaManager.recordFailure(this.providerStatus.id, 'chat', reason));
             }
 
             throw error;
@@ -330,7 +331,8 @@ export class QwenProvider implements LLMProvider {
             this.providerStatus.lastError = error.message;
             this.retryAfterTs = Date.now() + this.errorCooldownMs;
             if (!failureRecorded) {
-                c.executionCtx.waitUntil(quotaManager.recordFailure(this.providerStatus.id, 'search', 'runtime_error'));
+                const reason = error.message === 'AUTH_EXPIRED' ? 'auth_expired' : 'runtime_error';
+                c.executionCtx.waitUntil(quotaManager.recordFailure(this.providerStatus.id, 'search', reason));
             }
             return c.json({ error: error.message }, 500);
         }
