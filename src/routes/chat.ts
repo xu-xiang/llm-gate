@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { LLMProvider } from '../providers/base';
 import { logger } from '../core/logger';
+import { ProviderRouter } from '../providers/router';
 
-export function createChatRouter(qwenProvider?: LLMProvider, modelMappings: Record<string, string> = {}) {
+export function createChatRouter(providerRouter: ProviderRouter, modelMappings: Record<string, string> = {}) {
     const app = new Hono();
 
     app.post('/completions', async (c) => {
@@ -18,23 +18,7 @@ export function createChatRouter(qwenProvider?: LLMProvider, modelMappings: Reco
         }
 
         logger.debug(`Received request for model: ${model}`);
-
-        // Routing logic
-        const isQwenModel = model === 'coder-model' || 
-                           model === 'vision-model' || 
-                           model.startsWith('qwen') ||
-                           model.startsWith('qwen3');
-
-        if (qwenProvider && isQwenModel) {
-            return qwenProvider.handleChatCompletion(c, body);
-        }
-
-        return c.json({
-            error: {
-                message: `No provider available for model: ${model}`,
-                type: 'invalid_request_error'
-            }
-        }, 404);
+        return providerRouter.handleChat(c, body);
     });
 
     return app;

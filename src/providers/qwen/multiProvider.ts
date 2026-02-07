@@ -4,6 +4,7 @@ import { QwenProvider, ProviderStatus } from './provider';
 import { logger } from '../../core/logger';
 import { IStorage } from '../../core/storage';
 import { quotaManager } from '../../core/quota';
+import { ProviderRegistry } from '../../core/providerRegistry';
 
 export class MultiQwenProvider implements LLMProvider {
     private providers: QwenProvider[] = [];
@@ -11,15 +12,20 @@ export class MultiQwenProvider implements LLMProvider {
     private storage: IStorage;
     private clientId: string;
     private staticAuthFiles: string[];
+    private registry?: ProviderRegistry;
+    private lastScanAt = 0;
+    private readonly scanIntervalMs = 5000;
+    private scanPromise: Promise<void> | null = null;
 
-    constructor(storage: IStorage, authFiles: string[], clientId: string) {
+    constructor(storage: IStorage, authFiles: string[], clientId: string, registry?: ProviderRegistry) {
         this.storage = storage;
         this.staticAuthFiles = authFiles;
         this.clientId = clientId;
+        this.registry = registry;
     }
 
     async initialize() {
-        await this.scanAndLoadProviders();
+        await this.forceRescan();
     }
 
     private normalizeKey(key: string): string {
@@ -33,6 +39,8 @@ export class MultiQwenProvider implements LLMProvider {
             this.storage.list('oauth_creds_'),
             this.storage.list('./oauth_creds_')
         ]);
+        const registryIds = (await this.registry?.listProviderIds()) || [];
+        const aliasMap = (await this.registry?.getAliasMap()) || {};
 
         const validStaticKeys: string[] = [];
         for (const key of this.staticAuthFiles) {
@@ -43,6 +51,7 @@ export class MultiQwenProvider implements LLMProvider {
 
         const discoveredKeys = [
             ...validStaticKeys,
+            ...registryIds,
             ...dynamicQwen,
             ...dynamicQwenLegacy,
             ...dynamicOauth,
@@ -72,24 +81,52 @@ export class MultiQwenProvider implements LLMProvider {
         }
 
         this.providers = newProviders;
+        for (const provider of this.providers) {
+            const status = provider.getRuntimeStatus();
+            const alias = aliasMap[this.normalizeKey(status.id)];
+            if (alias) {
+                provider.setAlias(alias);
+            }
+        }
         if (this.currentIndex >= this.providers.length) {
             this.currentIndex = 0;
         }
     }
 
+    private async forceRescan(): Promise<void> {
+        if (this.scanPromise) {
+            await this.scanPromise;
+            return;
+        }
+        this.scanPromise = this.scanAndLoadProviders()
+            .finally(() => {
+                this.lastScanAt = Date.now();
+                this.scanPromise = null;
+            });
+        await this.scanPromise;
+    }
+
+    private async ensureFreshPool(): Promise<void> {
+        const now = Date.now();
+        if (now - this.lastScanAt < this.scanIntervalMs) return;
+        await this.forceRescan();
+    }
+
     public async addProvider(credsKey: string) {
         const normalized = this.normalizeKey(credsKey);
+        await this.registry?.upsertProvider(normalized);
         const existing = this.providers.find((p) => p.getRuntimeStatus().id === normalized);
         if (existing) {
             logger.info(`Reloading provider ${normalized}...`);
             await existing.reload();
         } else {
-            await this.scanAndLoadProviders();
+            await this.forceRescan();
         }
     }
 
     public async removeProvider(credsKey: string) {
         const normalized = this.normalizeKey(credsKey);
+        await this.registry?.removeProvider(normalized);
         this.providers = this.providers.filter((p) => p.getRuntimeStatus().id !== normalized);
         if (this.currentIndex >= this.providers.length) {
             this.currentIndex = 0;
@@ -97,6 +134,7 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     public async getAllProviderStatus(): Promise<ProviderStatus[]> {
+        await this.ensureFreshPool();
         const baseStatuses = this.providers.map((p) => p.getStatusBase());
         const usageMap = await quotaManager.getUsageBatch(baseStatuses.map((s) => s.id));
         return baseStatuses.map((s) => ({
@@ -114,6 +152,7 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     async handleChatCompletion(c: Context, payload?: any): Promise<Response | void> {
+        await this.ensureFreshPool();
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
             return c.json({ error: 'No Qwen providers configured' }, 500);
@@ -125,18 +164,13 @@ export class MultiQwenProvider implements LLMProvider {
         const errorMessages: string[] = [];
         let authExpiredCount = 0;
         let rateLimitedCount = 0;
+        let quotaExceededCount = 0;
         let quotaBlockedCount = 0;
 
         for (let attempt = 0; attempt < availableProviders; attempt++) {
             const providerIndex = (startIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
             const status = provider.getRuntimeStatus();
-
-            if (status.status === 'error' && status.lastError && this.isAuthErrorMessage(status.lastError)) {
-                authExpiredCount++;
-                errorMessages.push(status.lastError);
-                continue;
-            }
 
             // Circuit-breaker cooldown: temporarily skip known failing provider.
             if (!provider.canAttempt() && attempt < availableProviders - 1) {
@@ -165,6 +199,9 @@ export class MultiQwenProvider implements LLMProvider {
                 if (this.isAuthErrorMessage(message)) {
                     authExpiredCount++;
                 }
+                if (message.includes('Quota exceeded')) {
+                    quotaExceededCount++;
+                }
                 if (message.includes('Rate limited')) {
                     rateLimitedCount++;
                 }
@@ -185,8 +222,8 @@ export class MultiQwenProvider implements LLMProvider {
             if (quotaBlockedCount === availableProviders) {
                 return c.json(
                     {
-                        error: 'All providers rate limited',
-                        details: 'All accounts are currently rate limited.'
+                        error: 'All providers quota limited',
+                        details: 'Gateway quota/RPM reached. Wait for next minute or adjust limits.'
                     },
                     429
                 );
@@ -221,6 +258,16 @@ export class MultiQwenProvider implements LLMProvider {
             );
         }
 
+        if (quotaExceededCount === triedCount && triedCount > 0) {
+            return c.json(
+                {
+                    error: 'All providers quota exceeded',
+                    details: 'Qwen free quota exhausted. Re-login with another account or wait for quota reset.'
+                },
+                429
+            );
+        }
+
         return c.json(
             {
                 error: 'All providers failed',
@@ -233,6 +280,7 @@ export class MultiQwenProvider implements LLMProvider {
     }
 
     async handleWebSearch(c: Context, payload?: any): Promise<Response | void> {
+        await this.ensureFreshPool();
         const availableProviders = this.providers.length;
         if (availableProviders === 0) {
             return c.json({ error: 'No Qwen providers configured' }, 500);
@@ -248,11 +296,6 @@ export class MultiQwenProvider implements LLMProvider {
             const providerIndex = (startIndex + attempt) % availableProviders;
             const provider = this.providers[providerIndex];
             const status = provider.getRuntimeStatus();
-
-            if (status.status === 'error' && status.lastError && this.isAuthErrorMessage(status.lastError)) {
-                authExpiredCount++;
-                continue;
-            }
 
             if (!provider.canAttempt() && attempt < availableProviders - 1) {
                 continue;
@@ -290,8 +333,8 @@ export class MultiQwenProvider implements LLMProvider {
             if (quotaBlockedCount === availableProviders) {
                 return c.json(
                     {
-                        error: 'All providers rate limited',
-                        details: 'All accounts are currently rate limited.'
+                        error: 'All providers quota limited',
+                        details: 'Gateway quota/RPM reached. Wait for next minute or adjust limits.'
                     },
                     429
                 );

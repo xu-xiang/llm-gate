@@ -60,6 +60,11 @@ const MIGRATION_SQL = [
       count INTEGER DEFAULT 0,
       PRIMARY KEY (minute_bucket, provider_id, kind, outcome)
   )`,
+  `CREATE TABLE IF NOT EXISTS providers (
+      id TEXT PRIMARY KEY,
+      alias TEXT,
+      updated_at INTEGER DEFAULT (unixepoch())
+  )`,
   `INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch())`
 ];
 
@@ -97,7 +102,7 @@ export default {
         const config = loadConfig(env);
         console.log('[BOOT] Admin Console Path: /admin/ui (Shortcut: /ui)');
         
-        appInstance = await createApp(config, storage);
+        appInstance = await createApp(config, storage, env.DB);
         console.log('--- LLM GATEWAY READY ---');
       }
       return appInstance.fetch(request, env, ctx);

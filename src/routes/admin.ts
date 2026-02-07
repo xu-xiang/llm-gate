@@ -6,8 +6,9 @@ import { monitor } from '../core/monitor';
 import { logger } from '../core/logger';
 import { quotaManager } from '../core/quota';
 import crypto from 'node:crypto';
+import { ProviderRegistry } from '../core/providerRegistry';
 
-export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider | undefined, clientId: string, apiKey: string) {
+export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProvider | undefined, clientId: string, apiKey: string, registry?: ProviderRegistry) {
     const app = new Hono();
 
     app.use('/api/*', async (c, next) => {
@@ -163,6 +164,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
             const saveId = target_id || `qwen_creds_${crypto.randomUUID().substring(0, 8)}.json`;
             await storage.set(saveId, result);
             await storage.delete(`pending_${device_code}`);
+            await registry?.upsertProvider(saveId, result.alias);
             await qwenProvider?.addProvider(saveId);
             return c.json({ status: 'success', id: saveId });
         } catch (e: any) { return c.json({ status: 'error', message: e.message }); }
@@ -178,6 +180,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
             data.alias = alias;
             await storage.set(id, data);
             await storage.delete(altId);
+            await registry?.setAlias(id, alias);
             await qwenProvider?.addProvider(id);
         }
         return c.json({ success: true });
@@ -189,6 +192,7 @@ export function createAdminRouter(storage: IStorage, qwenProvider: MultiQwenProv
         await storage.delete(id);
         if (id.startsWith('./')) await storage.delete(id.substring(2));
         else await storage.delete(`./${id}`);
+        await registry?.removeProvider(id);
         await qwenProvider?.removeProvider(id);
         return c.json({ success: true });
     });

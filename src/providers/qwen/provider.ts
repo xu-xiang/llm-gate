@@ -35,6 +35,8 @@ export class QwenProvider implements LLMProvider {
     private providerStatus: ProviderStatus;
     private retryAfterTs = 0;
     private readonly errorCooldownMs = 15000;
+    private readonly upstreamUserAgent = 'QwenCode/0.9.1 (linux; x64)';
+    private readonly defaultSystemPrompt = '你是助手';
 
     constructor(storage: IStorage, credsPath: string, clientId: string) {
         this.credsPath = credsPath;
@@ -51,6 +53,12 @@ export class QwenProvider implements LLMProvider {
 
     public getRuntimeStatus(): ProviderStatus {
         return { ...this.providerStatus };
+    }
+
+    public setAlias(alias?: string) {
+        if (alias && alias.trim()) {
+            this.providerStatus.alias = alias.trim();
+        }
     }
 
     public canAttempt(now = Date.now()): boolean {
@@ -100,39 +108,12 @@ export class QwenProvider implements LLMProvider {
             }
 
             this.providerStatus.alias = creds.alias || this.authManager.getCachedAlias();
-
-            logger.info(`Verifying token for ${this.credsPath}...`);
-            const initialStatus = await this.authManager.probeTokenStatus(creds);
-            const isValid = initialStatus === 200;
-
-            if (isValid) {
-                this.providerStatus.status = 'active';
-                this.providerStatus.lastError = undefined;
-                this.retryAfterTs = 0;
-            } else {
-                logger.warn(`Token invalid for ${this.credsPath}. Attempting refresh...`);
-                const refreshed = await this.authManager.refreshToken(creds.refresh_token);
-                this.providerStatus.alias = refreshed.alias || this.providerStatus.alias;
-                const refreshedStatus = await this.authManager.probeTokenStatus(refreshed);
-
-                if (refreshedStatus === 200) {
-                    this.providerStatus.status = 'active';
-                    this.providerStatus.lastError = undefined;
-                    this.retryAfterTs = 0;
-                } else if (refreshedStatus === 401) {
-                    this.providerStatus.status = 'error';
-                    this.providerStatus.lastError = 'Unauthorized (Please Login)';
-                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
-                } else if (refreshedStatus === 429) {
-                    this.providerStatus.status = 'error';
-                    this.providerStatus.lastError = 'Rate limited';
-                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
-                } else {
-                    this.providerStatus.status = 'error';
-                    this.providerStatus.lastError = `Token probe failed (${refreshedStatus ?? 'network'})`;
-                    this.retryAfterTs = Date.now() + this.errorCooldownMs;
-                }
-            }
+            // Do not probe upstream on initialize. Probing consumes free quota and can
+            // create false 429 storms across edge isolates. Runtime requests handle
+            // 401/429 and update status accordingly.
+            this.providerStatus.status = 'active';
+            this.providerStatus.lastError = undefined;
+            this.retryAfterTs = 0;
         } catch (e: any) {
             logger.error(`QwenProvider initialization failed for ${this.credsPath}`, e);
             this.providerStatus.status = 'error';
@@ -173,6 +154,7 @@ export class QwenProvider implements LLMProvider {
                 const url = `${normalizedUrl}/chat/completions`;
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 60000);
+                const upstreamBody = this.buildDashScopeCompatibleBody(body);
 
                 try {
                     return await fetch(url, {
@@ -180,9 +162,12 @@ export class QwenProvider implements LLMProvider {
                         headers: {
                             Authorization: `Bearer ${creds.access_token}`,
                             'X-DashScope-AuthType': 'qwen-oauth',
+                            'X-DashScope-CacheControl': 'enable',
+                            'X-DashScope-UserAgent': this.upstreamUserAgent,
+                            'User-Agent': this.upstreamUserAgent,
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify(body),
+                        body: JSON.stringify(upstreamBody),
                         signal: controller.signal
                     });
                 } finally {
@@ -203,11 +188,22 @@ export class QwenProvider implements LLMProvider {
             if (!response.ok) {
                 this.providerStatus.errorCount++;
                 this.providerStatus.status = 'error';
+                let upstreamBody = '';
+                try {
+                    upstreamBody = await response.text();
+                } catch {}
                 this.providerStatus.lastError = `HTTP ${response.status}`;
                 this.retryAfterTs = Date.now() + this.errorCooldownMs;
                 failureRecorded = true;
 
                 if (response.status === 429) {
+                    const bodyLower = upstreamBody.toLowerCase();
+                    if (bodyLower.includes('insufficient_quota') || bodyLower.includes('free allocated quota exceeded')) {
+                        this.providerStatus.lastError = 'Quota exceeded (Qwen free tier)';
+                        await quotaManager.recordFailure(this.providerStatus.id, 'chat', 'upstream_quota_exceeded');
+                        throw new Error('Quota exceeded (Qwen free tier)');
+                    }
+                    this.providerStatus.lastError = 'Rate limited';
                     await quotaManager.recordFailure(this.providerStatus.id, 'chat', 'upstream_429');
                     throw new Error('Rate limited');
                 }
@@ -338,5 +334,46 @@ export class QwenProvider implements LLMProvider {
             }
             return c.json({ error: error.message }, 500);
         }
+    }
+
+    private buildDashScopeCompatibleBody(input: any): any {
+        if (!input || typeof input !== 'object') return input;
+        const out: any = { ...input };
+        if (!Array.isArray(input.messages)) return out;
+
+        const messages = input.messages.map((m: any) => ({ ...m }));
+        const hasSystem = messages.some((m: any) => m?.role === 'system');
+        if (!hasSystem) {
+            messages.unshift({
+                role: 'system',
+                content: this.defaultSystemPrompt
+            });
+        }
+
+        const systemIndex = messages.findIndex((m: any) => m?.role === 'system');
+        const lastIndex = messages.length - 1;
+
+        const mark = (idx: number) => {
+            if (idx < 0 || idx >= messages.length) return;
+            const msg = messages[idx];
+            if (!msg || msg.content == null) return;
+
+            if (typeof msg.content === 'string') {
+                msg.content = [{ type: 'text', text: msg.content, cache_control: { type: 'ephemeral' } }];
+                return;
+            }
+
+            if (Array.isArray(msg.content) && msg.content.length > 0) {
+                const arr = msg.content.map((p: any) => ({ ...p }));
+                const li = arr.length - 1;
+                arr[li] = { ...arr[li], cache_control: { type: 'ephemeral' } };
+                msg.content = arr;
+            }
+        };
+
+        mark(systemIndex);
+        mark(lastIndex);
+        out.messages = messages;
+        return out;
     }
 }

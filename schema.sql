@@ -25,5 +25,12 @@ CREATE TABLE IF NOT EXISTS request_audit_minute (
     PRIMARY KEY (minute_bucket, provider_id, kind, outcome)
 );
 
+-- Provider 注册表：稳定记录账号 ID 和别名，避免 KV list 的跨节点不一致
+CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    alias TEXT,
+    updated_at INTEGER DEFAULT (unixepoch())
+);
+
 -- 初始化启动时间（如果不存在）
 INSERT OR IGNORE INTO global_monitor (key, value) VALUES ('uptime_start', unixepoch());

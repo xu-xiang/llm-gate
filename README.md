@@ -88,3 +88,11 @@ npm run test:e2e
 - `src/providers/`: 模型适配器 (Qwen 认证与请求封装)。
 - `src/routes/`: 路由模块 (Admin UI, Chat API, Tools)。
 - `tests/e2e/`: 基于 Playwright 的自动化测试用例。
+
+---
+
+## 📘 项目文档
+
+- 架构说明：`docs/ARCHITECTURE.md`
+- 运维手册：`docs/OPERATIONS.md`
+- Provider 扩展：`docs/PROVIDERS.md`

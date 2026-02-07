@@ -1,6 +1,7 @@
 import { D1Database } from '@cloudflare/workers-types';
 import { IStorage } from './storage';
 import { logger } from './logger';
+import { getBeijingDate, getBeijingMinuteBucket } from './time';
 
 type UsageKind = 'chat' | 'search';
 type LimitReason = 'daily' | 'rpm';
@@ -46,20 +47,6 @@ class QuotaManager {
 
     private normalizeProviderId(providerId: string): string {
         return providerId.startsWith('./') ? providerId.substring(2) : providerId;
-    }
-
-    private getBeijingDate(): string {
-        const now = new Date();
-        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-        const beijingTime = new Date(utc + 3600000 * 8);
-        return beijingTime.toISOString().split('T')[0];
-    }
-
-    private getMinuteBucket(): string {
-        const now = new Date();
-        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-        const beijingTime = new Date(utc + 3600000 * 8);
-        return beijingTime.toISOString().slice(0, 16);
     }
 
     private getRpmCount(providerId: string, kind: UsageKind): number {
@@ -109,14 +96,14 @@ class QuotaManager {
 
     private bufferUsage(providerId: string, kind: UsageKind, count: number) {
         const cleanId = this.normalizeProviderId(providerId);
-        const date = this.getBeijingDate();
+        const date = getBeijingDate();
         const usageKey = `${date}|${cleanId}|${kind}`;
         this.pendingUsageWrites.set(usageKey, (this.pendingUsageWrites.get(usageKey) || 0) + count);
     }
 
     private bufferAudit(providerId: string, kind: UsageKind, outcome: string, count = 1) {
         const cleanId = this.normalizeProviderId(providerId);
-        const minuteBucket = this.getMinuteBucket();
+        const minuteBucket = getBeijingMinuteBucket();
         const auditKey = `${minuteBucket}|${cleanId}|${kind}|${outcome}`;
         this.pendingAuditWrites.set(auditKey, (this.pendingAuditWrites.get(auditKey) || 0) + count);
     }
@@ -129,7 +116,7 @@ class QuotaManager {
         if (!this.db) return { chat: 0, search: 0 };
 
         const cleanId = this.normalizeProviderId(providerId);
-        const date = this.getBeijingDate();
+        const date = getBeijingDate();
 
         try {
             const rows = await this.db
@@ -175,7 +162,7 @@ class QuotaManager {
     private async getCurrentMinuteUsageFromDb(providerId: string): Promise<UsageByType> {
         if (!this.db) return { chat: 0, search: 0 };
         const cleanId = this.normalizeProviderId(providerId);
-        const minuteBucket = this.getMinuteBucket();
+        const minuteBucket = getBeijingMinuteBucket();
         try {
             const rows = await this.db
                 .prepare(`
@@ -226,9 +213,8 @@ class QuotaManager {
     public async incrementUsage(providerId: string, kind: UsageKind = 'chat'): Promise<void> {
         this.bumpRpm(providerId, kind);
         this.bufferUsage(providerId, kind, 1);
-        if (this.auditSuccessEnabled) {
-            this.bufferAudit(providerId, kind, 'success', 1);
-        }
+        // Always persist minute-level success aggregate so RPM is accurate across isolates.
+        this.bufferAudit(providerId, kind, 'success', 1);
 
         this.bumpGlobal(`${kind}_total`, 1);
         this.bumpGlobal(`${kind}_success`, 1);
@@ -360,9 +346,10 @@ class QuotaManager {
         if (providerIds.length === 0) return result;
 
         const cleanedIds = Array.from(new Set(providerIds.map((id) => this.normalizeProviderId(id))));
-        const placeholders = cleanedIds.map((_, idx) => `?${idx + 2}`).join(', ');
-        const date = this.getBeijingDate();
-        const minute = this.getMinuteBucket();
+        const queryIds = Array.from(new Set(cleanedIds.flatMap((id) => [id, `./${id}`])));
+        const placeholders = queryIds.map((_, idx) => `?${idx + 2}`).join(', ');
+        const date = getBeijingDate();
+        const minute = getBeijingMinuteBucket();
 
         const usageMap: Record<string, UsageByType> = {};
         const rpmMap: Record<string, UsageByType> = {};
@@ -382,7 +369,7 @@ class QuotaManager {
                         GROUP BY provider_id, kind
                         `
                     )
-                    .bind(date, ...cleanedIds)
+                    .bind(date, ...queryIds)
                     .all();
 
                 for (const row of usageRows.results as any[]) {
@@ -407,7 +394,7 @@ class QuotaManager {
                         GROUP BY provider_id, kind
                         `
                     )
-                    .bind(minute, ...cleanedIds)
+                    .bind(minute, ...queryIds)
                     .all();
 
                 for (const row of rpmRows.results as any[]) {
@@ -456,10 +443,12 @@ class QuotaManager {
     public async getRecentAudit(limit = 120) {
         if (!this.db) return [];
         try {
+            const successClause = this.auditSuccessEnabled ? '' : "WHERE outcome != 'success'";
             const rows = await this.db
                 .prepare(
                     `SELECT minute_bucket, provider_id, kind, outcome, count
                      FROM request_audit_minute
+                     ${successClause}
                      ORDER BY minute_bucket DESC
                      LIMIT ?1`
                 )
